@@ -30,10 +30,35 @@ internal static class ShaderShadow
     /// <summary>The shaders we patch, keyed by file name. Nothing else is redirected.</summary>
     public static readonly string[] PatchedShaders = { "Star.vert", "Star.frag" };
 
-    public static void Log(string message) => Console.WriteLine("RealStars - " + message);
+    private static string? _logFile;
+
+    /// <summary>
+    /// Console plus a file beside the mod. The console is where StarMap's own log picks
+    /// messages up, but a launcher may stop capturing stdout early (Borea's does, after
+    /// the mods report they have loaded), and the redirect only fires later, when the
+    /// renderer first compiles a shader. The file is what proves it ran.
+    /// </summary>
+    public static void Log(string message)
+    {
+        string line = "RealStars - " + message;
+        Console.WriteLine(line);
+        try
+        {
+            if (_logFile != null)
+                File.AppendAllText(_logFile, DateTime.Now.ToString("HH:mm:ss.fff  ") + line + Environment.NewLine);
+        }
+        catch { /* logging must never take the game down */ }
+    }
 
     public static void Build(string coreDir, string modDir)
     {
+        try
+        {
+            _logFile = Path.Combine(modDir, "RealStars.log");
+            File.WriteAllText(_logFile, $"Real Stars, launched {DateTime.Now:yyyy-MM-dd HH:mm:ss}{Environment.NewLine}");
+        }
+        catch { _logFile = null; }
+
         string srcShaders = Path.Combine(coreDir, "Shaders");
         if (!Directory.Exists(srcShaders))
             throw new DirectoryNotFoundException("game shaders not found at " + srcShaders);
@@ -52,29 +77,35 @@ internal static class ShaderShadow
     }
 
     /// <summary>
-    /// Marks a shader as ours. The renderer gives no way to ask which file a compiled
-    /// pipeline came from, so the marker plus the redirect's log line is how a launch
-    /// proves it is running our copy rather than stock or Real Atmospheres'.
-    ///
-    /// GLSL allows comments and whitespace before <c>#version</c> and nothing else, so
-    /// the marker goes on the first line and the directive stays where it was.
+    /// Writes our version of a star shader over the copy in our tree, but only after the
+    /// stock file proves to be the one we designed against. A game update that rewrites
+    /// these shaders therefore leaves the sky stock rather than broken, and says so in the
+    /// log. Both files carry a marker on line 1, which GLSL allows before <c>#version</c>,
+    /// so a launch can be shown to be running our copy.
     /// </summary>
     private static bool PatchStarShader(string path)
     {
+        string name = Path.GetFileName(path);
         if (!File.Exists(path))
         {
-            Log($"WARN: {Path.GetFileName(path)} not found in the copied tree; leaving stars stock");
+            Log($"WARN: {name} not found in the copied tree; leaving it stock");
             return false;
         }
 
-        string text = File.ReadAllText(path);
-        if (text.StartsWith(Marker, StringComparison.Ordinal)) return true;
+        (string fingerprint, string replacement) = name.Equals("Star.vert", StringComparison.OrdinalIgnoreCase)
+            ? (StarShaders.VertFingerprint, StarShaders.Vert)
+            : (StarShaders.FragFingerprint, StarShaders.Frag);
 
-        File.WriteAllText(path, Marker + Environment.NewLine + text, new UTF8Encoding(false));
+        string stock = File.ReadAllText(path);
+        if (!stock.Contains(fingerprint, StringComparison.Ordinal))
+        {
+            Log($"WARN: {name} is not the version this mod was written against; leaving it stock");
+            return false;
+        }
+
+        File.WriteAllText(path, replacement, new UTF8Encoding(false));
         return true;
     }
-
-    private const string Marker = "// Real Stars: patched copy of the stock shader.";
 
     private static void CopyTree(string src, string dst)
     {
