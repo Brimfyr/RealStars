@@ -54,6 +54,32 @@ internal static class PlanetPhotometry
 
     private const double Au = 1.495978707e11;
 
+    // ---- phase -----------------------------------------------------------------------
+    // The IAU H-G system is an ASTEROID model, fitted below about 100 degrees of phase, and
+    // past that it extrapolates into nonsense: at 170 degrees it asks for 17 magnitudes of
+    // dimming where Mercury, the best-measured airless body, loses 9.3 and Venus loses 4.0.
+    // Bodies were vanishing at conjunction as a result.
+    //
+    // So H-G keeps the range it was fitted for, and a Lambert sphere - the geometric floor,
+    // no scattering tricks - stops it collapsing beyond. The floor is fitted to Mercury's
+    // published phase polynomial over 100-170 degrees, landing within 0.6 mag of it.
+    public const double AirlessLambertFloor = 0.198;
+
+    // An atmosphere behaves differently: forward scattering through cloud and haze keeps a
+    // thin crescent brilliant, which is why Venus is at its best as a crescent rather than
+    // full. A Lambert base plus a Henyey-Greenstein forward lobe, both fitted to Venus's
+    // published polynomial over its whole valid range, holds to 0.3 mag - against errors of
+    // up to 12 magnitudes from H-G. The same scattering Real Atmospheres uses for haze.
+    public const double AtmosphereForwardG = 0.384;
+    public const double AtmosphereForwardWeight = 0.1529;
+
+    // ---- rings -----------------------------------------------------------------------
+    // Ring brightness follows from the ring geometry the body itself carries, so a modded
+    // ringed world works the same way. This constant is the one thing that cannot be derived:
+    // an effective albedo that also carries the rings' opposition surge, calibrated so that
+    // Saturn's swing between edge-on and wide open matches the ~1.0 magnitude observed.
+    public const double RingAlbedo = 0.97;
+
     /// <summary>
     /// Apparent V magnitude of a sunlit body.
     ///
@@ -64,19 +90,98 @@ internal static class PlanetPhotometry
     /// G = 0.15, which is the usual default for a body whose slope parameter is unmeasured.
     /// </summary>
     public static double ApparentMagnitude(double radiusM, double albedo,
-                                           double sunDistM, double obsDistM, double cosPhase)
+                                           double sunDistM, double obsDistM, double cosPhase,
+                                           bool hasAtmosphere = false, double ringFluxRatio = 0.0,
+                                           double litFraction = 1.0)
     {
         double diameterKm = 2.0 * radiusM / 1000.0;
         double h = 5.0 * Math.Log10(1329.0 / (diameterKm * Math.Sqrt(Math.Max(albedo, 1e-4))));
         double distance = 5.0 * Math.Log10((sunDistM / Au) * (obsDistM / Au));
 
         double alpha = Math.Acos(Math.Clamp(cosPhase, -1.0, 1.0));
-        double halfTan = Math.Tan(Math.Min(alpha, Math.PI * 0.999) * 0.5);
-        double phi1 = Math.Exp(-3.33 * Math.Pow(halfTan, 0.63));
-        double phi2 = Math.Exp(-1.87 * Math.Pow(halfTan, 1.22));
-        double phase = -2.5 * Math.Log10(Math.Max(0.85 * phi1 + 0.15 * phi2, 1e-12));
+        double flux = PhaseFunction(alpha, hasAtmosphere)
+                    * (1.0 + Math.Max(ringFluxRatio, 0.0))
+                    * Math.Clamp(litFraction, 0.0, 1.0);
 
-        return h + distance + phase;
+        // Floored rather than allowed to reach zero: a totally eclipsed moon still catches
+        // light bent through its planet's atmosphere, and an infinity here would poison the
+        // glow radius downstream.
+        return h + distance - 2.5 * Math.Log10(Math.Max(flux, 1e-9));
+    }
+
+    /// <summary>
+    /// Fraction of the light an observer would see at opposition, for this phase angle.
+    /// Airless bodies follow H-G with a Lambert floor; atmospheres get the forward lobe.
+    /// </summary>
+    public static double PhaseFunction(double alphaRad, bool hasAtmosphere)
+    {
+        double a = Math.Clamp(alphaRad, 0.0, Math.PI);
+        double lambert = Math.Max((Math.Sin(a) + (Math.PI - a) * Math.Cos(a)) / Math.PI, 1e-12);
+
+        if (hasAtmosphere)
+            return lambert + AtmosphereForwardWeight * Henyey(Math.PI - a, AtmosphereForwardG);
+
+        double halfTan = Math.Tan(Math.Min(a, Math.PI * 0.999) * 0.5);
+        double hg = 0.85 * Math.Exp(-3.33 * Math.Pow(halfTan, 0.63))
+                  + 0.15 * Math.Exp(-1.87 * Math.Pow(halfTan, 1.22));
+        return Math.Max(hg, AirlessLambertFloor * lambert);
+    }
+
+    /// <summary>Henyey-Greenstein, the standard one-parameter scattering lobe.</summary>
+    private static double Henyey(double thetaRad, double g)
+    {
+        double d = 1.0 + g * g - 2.0 * g * Math.Cos(thetaRad);
+        return (1.0 - g * g) / (4.0 * Math.PI * Math.Pow(Math.Max(d, 1e-9), 1.5));
+    }
+
+    /// <summary>
+    /// Light the rings add, as a fraction of what the globe reflects.
+    ///
+    /// A flat annulus intercepts starlight in proportion to how open it is to the star, and
+    /// sends it on in proportion to how open it is to the observer, so the sine enters twice:
+    /// edge-on rings contribute nothing, which is exactly what Saturn does every fifteen years.
+    /// </summary>
+    public static double RingFluxRatio(double bodyRadiusM, double bodyAlbedo,
+                                       double innerM, double outerM,
+                                       double sinToStar, double sinToObserver)
+    {
+        if (outerM <= innerM || bodyRadiusM <= 0.0) return 0.0;
+        double annulus = outerM * outerM - innerM * innerM;
+        double disc = bodyRadiusM * bodyRadiusM;
+        return (RingAlbedo / Math.Max(bodyAlbedo, 1e-3)) * (annulus / disc)
+             * Math.Abs(sinToStar) * Math.Abs(sinToObserver);
+    }
+
+    /// <summary>
+    /// How much of the star a body can still see, given its parent might be in the way: 1 in
+    /// the open, 0 deep in the umbra, and a smooth ramp through the penumbra. All positions
+    /// are relative - the body to its parent, the parent to the star.
+    /// </summary>
+    public static double LitFraction(double bx, double by, double bz,
+                                     double px, double py, double pz,
+                                     double parentRadiusM, double starRadiusM)
+    {
+        double parentDist = Math.Sqrt(px * px + py * py + pz * pz);
+        if (parentDist <= 0.0 || parentRadiusM <= 0.0) return 1.0;
+
+        // The shadow points straight away from the star.
+        double sx = px / parentDist, sy = py / parentDist, sz = pz / parentDist;
+        double depth = bx * sx + by * sy + bz * sz;
+        if (depth <= 0.0) return 1.0;                    // sunward of its parent
+
+        double ox = bx - depth * sx, oy = by - depth * sy, oz = bz - depth * sz;
+        double offset = Math.Sqrt(ox * ox + oy * oy + oz * oz);
+
+        // The umbra narrows with depth and the penumbra widens, both at the rate the star's
+        // size sets. Past the umbra's tip its radius goes negative, which is an annular
+        // eclipse: never total, and the test below handles it without a special case.
+        double umbra = parentRadiusM - depth * (starRadiusM - parentRadiusM) / parentDist;
+        double penumbra = parentRadiusM + depth * (starRadiusM + parentRadiusM) / parentDist;
+
+        if (offset >= penumbra) return 1.0;
+        if (offset <= umbra) return 0.0;
+        double t = (offset - umbra) / Math.Max(penumbra - umbra, 1e-6);
+        return t * t * (3.0 - 2.0 * t);
     }
 
     /// <summary>
@@ -230,7 +335,139 @@ internal static class PlanetPhotometry
         if (_diameterPixels?.Invoke(camera, new object[] { 2.0 * radius, obsDist }) is double px)
             pixelDiameter = px;
 
-        return ApparentMagnitude(radius, albedo, sunDist, obsDist, cosPhase);
+        return ApparentMagnitude(radius, albedo, sunDist, obsDist, cosPhase,
+                                 HasAtmosphere(celestial),
+                                 Rings(celestial, template, radius, albedo, ex, ey, ez, gx, gy, gz),
+                                 Lit(celestial, ex, ey, ez));
+    }
+
+    private static Type? _atmosphericType;
+    private static bool _atmosphericLookedUp;
+
+    /// <summary>Does the engine consider this body to have an atmosphere? It already knows.</summary>
+    private static bool HasAtmosphere(object celestial)
+    {
+        if (!_atmosphericLookedUp)
+        {
+            _atmosphericType = AccessTools.TypeByName("KSA.AtmosphericBody");
+            _atmosphericLookedUp = true;
+        }
+        return _atmosphericType?.IsInstanceOfType(celestial) ?? false;
+    }
+
+    private static readonly Dictionary<Type, FieldInfo?> _ringsFields = new();
+    private static MethodInfo? _ringNormal;
+    private static bool _ringNormalLookedUp;
+
+    /// <summary>
+    /// The ring contribution, from the body's own ring geometry. Returns 0 for a body with no
+    /// rings, which is almost all of them.
+    /// </summary>
+    private static double Rings(object celestial, object template, double radius, double albedo,
+                                double ex, double ey, double ez, double gx, double gy, double gz)
+    {
+        Type tt = template.GetType();
+        if (!_ringsFields.TryGetValue(tt, out FieldInfo? rf))
+            _ringsFields[tt] = rf = AccessTools.Field(tt, "RingsReference");
+        object? rings = rf?.GetValue(template);
+        if (rings == null) return 0.0;
+
+        double inner = Distance(rings, "InnerRadius"), outer = Distance(rings, "OuterRadius");
+        if (outer <= inner) return 0.0;
+
+        if (!_ringNormalLookedUp)
+        {
+            // Lives off in KSA.Rendering.Rings.Rendering, not beside the bodies, and a rename
+            // of that namespace should cost us rings rather than throw, so the simple name is
+            // a fallback.
+            Type? rr = AccessTools.TypeByName("KSA.Rendering.Rings.Rendering.PlanetaryRingsRenderer")
+                    ?? AccessTools.AllTypes().FirstOrDefault(t => t.Name == "PlanetaryRingsRenderer");
+            _ringNormal = rr == null ? null : AccessTools.Method(rr, "ComputeRingNormal");
+            _ringNormalLookedUp = true;
+            if (_ringNormal == null)
+                ShaderShadow.Log("WARN: ring geometry not found; ringed planets lose their rings' light");
+        }
+        object? normalObj = _ringNormal?.Invoke(null, new[] { rings, celestial });
+        if (normalObj == null) return 0.0;
+        (double nx, double ny, double nz) = Vec(normalObj);
+        double nl = Math.Sqrt(nx * nx + ny * ny + nz * nz);
+        if (nl <= 0.0) return 0.0;
+        nx /= nl; ny /= nl; nz /= nl;
+
+        // How open the rings are to the star, and to the camera. The body sits at ex,ey,ez
+        // from its star and at gx,gy,gz from the camera, so those are the two directions.
+        double el = Math.Sqrt(ex * ex + ey * ey + ez * ez);
+        double gl = Math.Sqrt(gx * gx + gy * gy + gz * gz);
+        if (el <= 0.0 || gl <= 0.0) return 0.0;
+        double sinStar = Math.Abs((nx * ex + ny * ey + nz * ez) / el);
+        double sinObs = Math.Abs((nx * gx + ny * gy + nz * gz) / gl);
+
+        return RingFluxRatio(radius, albedo, inner, outer, sinStar, sinObs);
+    }
+
+    private static readonly Dictionary<string, FieldInfo?> _distanceFields = new();
+    private static readonly Dictionary<Type, MethodInfo?> _inMeters = new();
+
+    /// <summary>A DistanceReference field, in metres.</summary>
+    private static double Distance(object owner, string field)
+    {
+        Type t = owner.GetType();
+        string key = t.FullName + "." + field;
+        if (!_distanceFields.TryGetValue(key, out FieldInfo? f))
+            _distanceFields[key] = f = AccessTools.Field(t, field);
+
+        object? d = f?.GetValue(owner);
+        if (d == null) return 0.0;
+
+        Type dt = d.GetType();
+        if (!_inMeters.TryGetValue(dt, out MethodInfo? m))
+            _inMeters[dt] = m = AccessTools.Method(dt, "InMeters");
+        return m?.Invoke(d, null) is double v ? v : 0.0;
+    }
+
+    private static PropertyInfo? _parentProp;
+    private static double _starRadius;
+
+    /// <summary>
+    /// Whether the body is in its parent's shadow. Only moons can be: a planet's parent is the
+    /// star itself, and a body cannot be eclipsed by what lights it.
+    /// </summary>
+    private static double Lit(object celestial, double ex, double ey, double ez)
+    {
+        _parentProp ??= FindProperty(celestial.GetType(), "Parent");
+        object? parent = _parentProp?.GetValue(celestial);
+        if (parent == null) return 1.0;
+
+        // The parent must itself orbit something, or it is the star.
+        PropertyInfo? grandParent = FindProperty(parent.GetType(), "Parent");
+        if (grandParent?.GetValue(parent) == null) return 1.0;
+
+        PropertyInfo? radiusProp = FindProperty(parent.GetType(), "MeanRadius");
+        if (radiusProp?.GetValue(parent) is not double parentRadius || parentRadius <= 0.0) return 1.0;
+
+        MethodInfo? eclMethod = AccessTools.Method(parent.GetType(), "GetPositionEcl", Type.EmptyTypes);
+        object? parentEcl = eclMethod?.Invoke(parent, null);
+        if (parentEcl == null) return 1.0;
+        (double px, double py, double pz) = Vec(parentEcl);
+
+        if (_starRadius <= 0.0) _starRadius = StarRadius(parent);
+        if (_starRadius <= 0.0) return 1.0;
+
+        return LitFraction(ex - px, ey - py, ez - pz, px, py, pz, parentRadius, _starRadius);
+    }
+
+    /// <summary>Radius of whatever sits at the root of the parent chain: the star.</summary>
+    private static double StarRadius(object body)
+    {
+        for (int i = 0; i < 8 && body != null; i++)
+        {
+            PropertyInfo? p = FindProperty(body.GetType(), "Parent");
+            object? next = p?.GetValue(body);
+            if (next == null)
+                return FindProperty(body.GetType(), "MeanRadius")?.GetValue(body) is double r ? r : 0.0;
+            body = next;
+        }
+        return 0.0;
     }
 
     private static readonly Dictionary<Type, FieldInfo?> _scatteringFields = new();
