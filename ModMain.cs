@@ -90,8 +90,20 @@ public class ModMain
                              + "and its brightness bytes mean something else, so the sky will look wrong");
         }
 
+        // Distant planets, onto the same magnitude scale as the stars. Fail-soft: without this
+        // the sky is still ours, the planets just keep the game's radius-based sizing.
+        Type? distance = AccessTools.TypeByName("KSA.StaticCelestialDistanceRendering");
+        MethodInfo? sizeScale = distance == null ? null : AccessTools.Method(distance, "GetApparentSizeScale");
+        if (sizeScale != null)
+            harmony.Patch(sizeScale,
+                prefix: new HarmonyMethod(typeof(PlanetPhotometry), nameof(PlanetPhotometry.ApparentSizeScalePrefix)));
+        else
+            ShaderShadow.Log("WARN: StaticCelestialDistanceRendering.GetApparentSizeScale not found; "
+                             + "distant planets keep the game's own brightness");
+
         ShaderShadow.Log("installed (star shader redirect active"
-                         + (Patches.StarBinary != null ? ", own catalogue)" : ", stock catalogue)"));
+                         + (Patches.StarBinary != null ? ", own catalogue" : ", stock catalogue")
+                         + (sizeScale != null ? ", photometric planets)" : ")"));
     }
 }
 

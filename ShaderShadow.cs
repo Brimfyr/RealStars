@@ -27,8 +27,9 @@ internal static class ShaderShadow
     /// <summary>Absolute path of our patched Shaders directory, or null if the build failed.</summary>
     public static string? ShadersRoot;
 
-    /// <summary>The shaders we patch, keyed by file name. Nothing else is redirected.</summary>
-    public static readonly string[] PatchedShaders = { "Star.vert", "Star.frag" };
+    /// <summary>The shaders we patch, by file name. Nothing else is redirected.</summary>
+    public static readonly string[] PatchedShaders =
+        StarShaders.All.Select(s => s.Name).ToArray();
 
     private static string? _logFile;
 
@@ -92,9 +93,14 @@ internal static class ShaderShadow
             return false;
         }
 
-        (string fingerprint, string replacement) = name.Equals("Star.vert", StringComparison.OrdinalIgnoreCase)
-            ? (StarShaders.VertFingerprint, StarShaders.Vert)
-            : (StarShaders.FragFingerprint, StarShaders.Frag);
+        var entry = StarShaders.All.FirstOrDefault(s =>
+            s.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (entry.Name == null)
+        {
+            Log($"WARN: no replacement defined for {name}");
+            return false;
+        }
+        (_, string fingerprint, string replacement) = entry;
 
         string stock = File.ReadAllText(path);
         if (!stock.Contains(fingerprint, StringComparison.Ordinal))

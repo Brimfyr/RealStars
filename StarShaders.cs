@@ -14,6 +14,17 @@ internal static class StarShaders
     /// <summary>Distinctive stock text. If it is gone, the shader we designed against is gone too.</summary>
     public const string VertFingerprint = "outMaxTheta = glowScale * sqrt(irradiation);";
     public const string FragFingerprint = "float psf_glow(float offset)";
+    public const string PlanetVertFingerprint = "vertPosition.x *= instanceData.scalePixel / global.camera.screenWidth;";
+    public const string PlanetFragFingerprint = "float simpleBrightness = maxBrightness * (inScalePixel / smallStarThreshold);";
+
+    /// <summary>Every shader we replace, with the stock text that proves it is the one we mean.</summary>
+    public static readonly (string Name, string Fingerprint, string Replacement)[] All =
+    {
+        ("Star.vert", VertFingerprint, Vert),
+        ("Star.frag", FragFingerprint, Frag),
+        ("StaticCelestialDistance.vert", PlanetVertFingerprint, PlanetVert),
+        ("StaticCelestialDistance.frag", PlanetFragFingerprint, PlanetFrag),
+    };
 
     // ---------------------------------------------------------------------------------
     // Why any of this changes:
@@ -166,6 +177,135 @@ internal static class StarShaders
             intensity *= smoothstep(1.0f, 0.85f, r);
 
             outColor = vec4(inColor.rgb * min(intensity, rsMaxOutput), 1.0f);
+        }
+        """;
+
+    // ---------------------------------------------------------------------------------
+    // Distant planets. A planet too far to resolve is a point source like any star, and it
+    // should sit on the same brightness scale: Venus at magnitude -4.6 outshining everything,
+    // Neptune at +7.8 a dot you have to look for. Stock instead sizes the sprite by the
+    // body's RADIUS (see PlanetPhotometry), which inverts that ordering.
+    //
+    // PlanetPhotometry feeds the real apparent magnitude through scalePixel as a glow radius
+    // in pixels, the same quantity the star vertex shader computes, and these two shaders
+    // then draw it with the same profile - so a planet and a star of equal magnitude are
+    // indistinguishable, which is exactly what a telescope shows.
+    // ---------------------------------------------------------------------------------
+
+    public const string PlanetVert = """
+        // Real Stars: patched copy of the stock shader.
+        #version 450
+
+        #include "Common/Shared.glsl"
+        #include "Common/Camera.glsl"
+
+        struct InstanceData
+        {
+            vec3 positionEgo;
+            vec3 color;
+            float scalePixel;
+        };
+
+        layout(std430, set = 1, binding = 0) readonly buffer InstanceStorageBlock
+        {
+            InstanceData Data[];
+        } InstanceStorage;
+
+        layout (location = 0) out flat vec3 outColor;
+        layout (location = 1) out float outDepth;
+        layout (location = 2) out flat float outScalePixel;
+        layout (location = 3) out vec2 outUV;
+
+        vec2 uv[] =
+        {
+            vec2(0.5, 0.5),         // Center point
+            vec2(1.0, 0.5),         // Point 1 (angle 0 degrees)
+            vec2(0.854, 0.854),     // Point 2 (angle 45 degrees)
+            vec2(0.5, 1.0),         // Point 3 (angle 90 degrees)
+            vec2(0.146, 0.854),     // Point 4 (angle 135 degrees)
+            vec2(0.0, 0.5),         // Point 5 (angle 180 degrees)
+            vec2(0.146, 0.146),     // Point 6 (angle 225 degrees)
+            vec2(0.5, 0.0),         // Point 7 (angle 270 degrees)
+            vec2(0.854, 0.146),     // Point 8 (angle 315 degrees)
+            vec2(1.0, 0.5)          // Final point to close the octagon
+        };
+
+        void main()
+        {
+            InstanceData instanceData = InstanceStorage.Data[gl_InstanceIndex];
+
+            vec2 vertPosition = uv[gl_VertexIndex] - vec2(0.5f);
+
+            // scalePixel is the glow RADIUS in pixels. The offset is added after the
+            // perspective divide, so a pixel is 2/screen in normalised device coordinates,
+            // and the quad spans from -radius to +radius across its 1.0 of uv.
+            vertPosition.x *= 4.0f * instanceData.scalePixel / global.camera.screenWidth;
+            vertPosition.y *= 4.0f * instanceData.scalePixel / global.camera.screenHeight;
+
+            vec4 worldPosition = global.camera.viewProjection * vec4(instanceData.positionEgo, 1);
+            worldPosition /= worldPosition.w;
+            vec4 screenOffset = vec4(vertPosition.x, vertPosition.y, 0.0f, 0);
+
+            vec4 depthCalculation = global.camera.viewProjection * vec4(instanceData.positionEgo, 1);
+            outDepth = depthCalculation.z / depthCalculation.w;
+
+            gl_Position = worldPosition + screenOffset;
+            gl_Position.z = max(0.0, gl_Position.z); // Prevent early frag culling
+            outColor = instanceData.color;
+
+            outScalePixel = instanceData.scalePixel;
+            outUV = uv[gl_VertexIndex];
+        }
+        """;
+
+    public const string PlanetFrag = $$"""
+        // Real Stars: patched copy of the stock shader.
+        #version 450
+
+        #include "Common/Global.glsl"
+
+        layout (location = 0) in flat vec3 inColor;
+        layout (location = 1) in float inDepth;
+        layout (location = 2) in flat float inScalePixel;
+        layout (location = 3) in vec2 inUV;
+
+        layout (location = 0) out vec4 outColor;
+
+        {{Tuning}}
+        const float rsMaxOutput = 24.0;
+
+        void main(void)
+        {
+            float r = length(inUV.xy - vec2(0.5f)) * 2.0f;   // 0 at the centre, 1 at the edge
+            float glow = max(inScalePixel, 1e-3f);
+            float x = (r * glow) / rsPsfCore;
+
+            // The sprite was sized so the profile reaches one display level exactly at its
+            // edge, so the peak follows from the radius alone - no second channel needed, and
+            // it stays in step with the star shader by construction.
+            float edge = 1.0f + (glow / rsPsfCore) * (glow / rsPsfCore);
+            float peak = (edge * edge) / rsDisplayLevels;
+
+            float falloff = 1.0f + x * x;
+            float intensity = peak / (falloff * falloff);
+            intensity *= smoothstep(1.0f, 0.85f, r);
+
+            // The engine has already scaled this colour by its own phase term. Ours is in the
+            // magnitude, so take the hue and leave the brightness alone.
+            float hue = max(max(inColor.r, inColor.g), inColor.b);
+            vec3 tint = hue > 1e-4f ? inColor / hue : vec3(1.0f);
+
+            float brightness = min(intensity, rsMaxOutput);
+            outColor = vec4(tint * brightness, min(brightness, 1.0f));
+
+            if (brightness >= 1.0f)
+            {
+                gl_FragDepth = inDepth;
+            }
+            else
+            {
+                gl_FragDepth = 0.0;
+            }
         }
         """;
 }
