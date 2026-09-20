@@ -69,7 +69,29 @@ public class ModMain
         harmony.Patch(fromFile,
             prefix: new HarmonyMethod(typeof(Patches), nameof(Patches.ShaderFromFilePrefix)));
 
-        ShaderShadow.Log("installed (star shader redirect active)");
+        // Our catalogue replaces Core's. Both methods read the same private field, and the
+        // count one sizes the instance buffer, so patching only the loader would truncate
+        // the sky to the stock file's 99,038 entries.
+        Patches.StarBinary = Path.Combine(modDir, "assets", "RealStars.bin");
+        if (File.Exists(Patches.StarBinary))
+        {
+            var starsPrefix = new HarmonyMethod(typeof(Patches), nameof(Patches.ModStarsPrefix));
+            foreach (string name in new[] { "GetStarCount", "LoadStarBinaries" })
+            {
+                MethodInfo m = AccessTools.Method(modType, name)
+                    ?? throw new InvalidOperationException($"Mod.{name} not found");
+                harmony.Patch(m, prefix: starsPrefix);
+            }
+        }
+        else
+        {
+            Patches.StarBinary = null;
+            ShaderShadow.Log("WARN: assets\\RealStars.bin is missing; the stock catalogue stays, "
+                             + "and its brightness bytes mean something else, so the sky will look wrong");
+        }
+
+        ShaderShadow.Log("installed (star shader redirect active"
+                         + (Patches.StarBinary != null ? ", own catalogue)" : ", stock catalogue)"));
     }
 }
 
@@ -114,6 +136,54 @@ internal static class Patches
         filePath = candidate;
         if (Logged.Add(name))
             ShaderShadow.Log($"redirected {name}");
+    }
+
+    /// <summary>Absolute path of our catalogue, or null when it is missing.</summary>
+    public static string? StarBinary;
+
+    private static PropertyInfo? _idProp;
+    private static FieldInfo? _starBinariesField;
+    private static bool _loggedStars;
+
+    /// <summary>
+    /// Prefix on Mod.GetStarCount / Mod.LoadStarBinaries: swap the Core mod's star binary
+    /// entry for ours. The loader does Path.Combine(DirectoryPath, entry), which passes a
+    /// rooted path straight through, so an absolute path is all it takes.
+    ///
+    /// The swap is permanent and idempotent, which is what keeps the two methods consistent:
+    /// the count sizes the instance buffer and the loader fills it, and they must read the
+    /// same file. Only Core's list is touched, so another mod's stars are left alone.
+    /// </summary>
+    public static void ModStarsPrefix(object __instance)
+    {
+        if (StarBinary == null) return;
+
+        _idProp ??= __instance.GetType().GetProperty("Id");
+        if (_idProp?.GetValue(__instance) is not string id
+            || !id.Equals("Core", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _starBinariesField ??= AccessTools.Field(__instance.GetType(), "StarBinaries");
+        if (_starBinariesField?.GetValue(__instance) is not string[] binaries || binaries.Length == 0)
+            return;
+
+        if (binaries.Length > 1)
+            binaries = new[] { binaries[0] };      // one sky, not ours stacked on theirs
+
+        if (binaries[0] != StarBinary)
+        {
+            binaries[0] = StarBinary;
+            _starBinariesField.SetValue(__instance, binaries);
+            if (!_loggedStars)
+            {
+                ShaderShadow.Log("replaced the Core star catalogue");
+                _loggedStars = true;
+            }
+        }
+        else
+        {
+            _starBinariesField.SetValue(__instance, binaries);
+        }
     }
 
     /// <summary>Full path with consistent separators; relative paths resolve against the

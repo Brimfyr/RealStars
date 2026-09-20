@@ -6,27 +6,39 @@ rights are needed: at launch the mod builds its own copy of the game's shader tr
 folder, patches the star shaders inside it, and uses Harmony to redirect the game's reads of those
 two files into the copy. The copy is rebuilt from the current game files every launch.
 
-Status: **skeleton**. The seam is in place and the shaders are byte-for-byte stock apart from a
-marker comment, so the sky looks exactly as it does without the mod.
+## What it changes
 
-## What it will change
+- **Brightness is a magnitude again.** Stock carries it in the sprite's *size*: `Star.vert` sets the
+  quad radius from the packed byte, so Sirius is a 52 px octagon at 1080p. Worse, the fragment
+  shader's point spread function works in an angle derived from the UV offset while its cutoff comes
+  from the quad radius — unrelated quantities, so for anything bright the profile stays above the
+  1.5 clamp across the whole quad and the star renders as a flat white disc.
+- **A real point spread function.** A Moffat profile with β = 2, normalised to unit energy, whose
+  1/r² wings are what diffraction and atmospheric seeing both leave. The sprite is sized to where
+  that profile crosses one display level, so apparent size follows from brightness instead of
+  standing in for it: Sirius becomes a 35 px sprite with a 3 px saturated core.
+- **Its own star catalogue**, built from Hipparcos by `make_star_binary.py`. The shipped one holds
+  almost no brightness information: its size byte runs 17–239 with a 90th percentile of 17, what
+  variation exists below that floor is smuggled into the colour channel, and 92,687 of its 99,038
+  stars are floored in both and render identically. End to end it spans 70:1, about 4.6 magnitudes.
+  Ours stores V magnitude linearly at 24 bytes per magnitude, spanning 15,000:1 across 83,337 stars
+  to V = 9.
 
-- **Magnitude-based brightness.** Brightness is currently carried by *size*: `Star.vert` sets the
-  sprite radius to `scale / 255` in clip units, which makes Sirius a ~46 px octagon at 1080p while a
-  faint star is 3.3 px. Since the packed byte follows size ∝ 10^(−0.164 m), the magnitude can be
-  recovered in the vertex shader and used to drive a normalised point spread function with energy
-  ∝ 10^(−0.4 m) instead.
-- **A real point spread function**, replacing the simplified Celestia PSF whose peak is clamped at
-  1.5, so bright stars stop reading as discs.
-- **Scintillation** through atmospheres, driven by airmass along the view ray.
+Still to come: **scintillation** through atmospheres, driven by airmass along the view ray, and
+possibly real-time **parallax**, which needs distances carried into the renderer.
 
 Not planned: auto exposure (the engine has no exposure control yet) and diffraction spikes.
 
-Colour is already accurate and needs no work: the star binary the game ships carries linearised
-Mitchell–Charity blackbody colours, within a few percent of CIE 1931 D65. The game's own
-`generatestarbinary` command is the broken path — it reads V−I as though it were B−V and its colour
-fit returns black outside −0.4…2.1, culling 158 naked-eye stars including Betelgeuse and Antares.
-That only matters if we generate a catalogue of our own, which real-time parallax would require.
+### On colour
+
+The shipped binary's colours are accurate — linearised blackbody, within a few percent of CIE 1931
+D65 — and ours agree with them to a median of 7/255 on matched stars, computed independently from
+B−V through an effective temperature, a Planck spectrum and the CIE observer.
+
+The game's own `generatestarbinary` is the broken path, and ours avoids all three of its faults: it
+reads the V−I column as though it were B−V, its colour fit returns black outside −0.4…2.1 (culling
+158 naked-eye stars, Betelgeuse and Antares among them), and it writes Y-up equatorial rather than
+the ecliptic Z-up frame the solar system is built in.
 
 ## Install
 

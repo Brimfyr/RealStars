@@ -25,31 +25,45 @@ internal static class StarShaders
     // quad radius. The two are unrelated: for a bright star the profile stays above the 1.5
     // clamp across the whole quad, which is why bright stars read as flat white discs.
     //
-    // Here the byte means FLUX instead. The catalogue's generator wrote size = k*10^(-0.164 m),
-    // which is Pogson's law in disguise, so flux = 10^(-0.4 m) = size^(0.4/0.164) up to a
-    // constant. The profile is a normalised Moffat with beta = 2, whose 1/r^2 wings are what
-    // both diffraction and atmospheric seeing leave behind, and the quad is sized to exactly
-    // contain it: a star's apparent size becomes a consequence of its brightness rather than
-    // the way it is stored.
+    // Here the byte is a MAGNITUDE, written by make_star_binary.py, and flux follows from
+    // Pogson's law. The profile is a normalised Moffat with beta = 2, whose 1/r^2 wings are
+    // what both diffraction and atmospheric seeing leave behind, and the quad is sized to
+    // exactly contain it: a star's apparent size becomes a consequence of its brightness
+    // rather than the way it is stored.
+    //
+    // This means the shaders and the catalogue are a matched pair. Running these against the
+    // stock binary would read its size bytes as magnitudes and light the sky wrongly, which
+    // is why ModMain only patches the shaders' meaning of the data alongside its own file.
     // ---------------------------------------------------------------------------------
 
     /// <summary>Shared tuning. Both stages need the same numbers, so they are written once.</summary>
+    /// <remarks>
+    /// rsMagFaint and rsBytesPerMag MUST match make_star_binary.py, which writes the byte.
+    /// </remarks>
     private const string Tuning = """
         // ---- Real Stars tuning ----
-        // The catalogue's floor value: ~90% of its 99,038 stars sit at 17/255, so this is
-        // both the reference point for flux and the faintest thing on the sky.
-        const float rsSizeFloor = 17.0 / 255.0;
-        // flux = 10^(-0.4 m) from size = k*10^(-0.164 m)
-        const float rsFluxExponent = 0.4 / 0.164;
+        // Our catalogue stores V magnitude linearly in the byte: byte 1 is the faint limit
+        // and each step is 1/24 of a magnitude. make_star_binary.py writes it.
+        const float rsMagFaint = 9.0;
+        const float rsBytesPerMag = 24.0;
+        // The magnitude that peaks at 1.0 on screen. Lower makes the whole sky brighter.
+        // At 5.0 a naked-eye star of magnitude 6 sits at 0.4, faint but present.
+        const float rsMagRef = 5.0;
         // Core width of the point spread function in pixels. About a pixel is right for an
         // unresolved source: wider reads as a soft lens, narrower aliases into a hard dot.
         const float rsPsfCore = 1.0;
-        // Overall scale, set so a floor star peaks near 1.0 - the dimmest value that still
-        // reads as a star against black.
+        // Overall scale, so a star at the reference magnitude peaks near 1.0.
         const float rsBrightness = 3.1;
         // One display level out of 8-bit, the level below which a wing cannot show.
         const float rsDisplayLevels = 255.0;
         const float rsPi = 3.14159265;
+
+        // Byte back to flux. Pogson: five magnitudes is a factor of a hundred.
+        float rsFlux(float packedScale)
+        {
+            float mag = rsMagFaint - (packedScale * 255.0 - 1.0) / rsBytesPerMag;
+            return pow(10.0, -0.4 * (mag - rsMagRef));
+        }
         """;
 
     public const string Vert = $$"""
@@ -91,8 +105,7 @@ internal static class StarShaders
             vec4 packedData = unpackRGBA(packed);
             outColor = packedData.xyz;
 
-            // Size byte back to flux
-            float flux = pow(max(packedData.w, 1e-4) / rsSizeFloor, rsFluxExponent);
+            float flux = rsFlux(packedData.w);
 
             // Moffat beta = 2 at unit energy peaks at 1/(pi*core^2), so the profile crosses
             // one display level at this radius. Sizing the quad to it means the sprite is
