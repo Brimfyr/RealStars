@@ -63,8 +63,15 @@ internal static class StarShaders
         // Core width of the point spread function in pixels. About a pixel is right for an
         // unresolved source: wider reads as a soft lens, narrower aliases into a hard dot.
         const float rsPsfCore = 1.0;
-        // Overall scale, so a star at the reference magnitude peaks near 1.0.
-        const float rsBrightness = 3.1;
+        // How fast the profile falls away, and so how large a bright source looks. Intensity
+        // goes as (1 + (r/core)^2)^-beta, and the radius that clears one display level grows
+        // as flux^(1/2beta): at beta = 2 that is flux^0.25, which spreads a 12 magnitude range
+        // over 13x in size and makes a bright moon's glint wider than the planet it orbits.
+        // Real seeing-limited profiles sit between 2.5 and 4.5; 3.5 holds that range to 5.6x.
+        const float rsPsfBeta = 3.5;
+        // Overall scale, so a star at the reference magnitude peaks near 1.0. It carries the
+        // (beta - 1) normalisation, so changing beta alone alters width and not brightness.
+        const float rsBrightness = 1.24;
         // One display level out of 8-bit, the level below which a wing cannot show.
         const float rsDisplayLevels = 255.0;
         // Largest glow a point source may draw, in pixels of radius. The radius grows as the
@@ -127,9 +134,10 @@ internal static class StarShaders
             // Moffat beta = 2 at unit energy peaks at 1/(pi*core^2), so the profile crosses
             // one display level at this radius. Sizing the quad to it means the sprite is
             // exactly the star's visible extent and never a disc with a hard edge.
-            float peak = flux * rsBrightness / (rsPi * rsPsfCore * rsPsfCore);
-            float glowPx = clamp(rsPsfCore * sqrt(max(sqrt(peak * rsDisplayLevels) - 1.0, 0.0)),
-                                 rsMinGlowPx, rsMaxGlowPx);
+            float peak = flux * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
+            float glowPx = clamp(
+                rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels, 1.0 / rsPsfBeta) - 1.0, 0.0)),
+                rsMinGlowPx, rsMaxGlowPx);
 
             outUv = uv[gl_VertexIndex];
             outStar = vec2(flux, glowPx);
@@ -170,12 +178,12 @@ internal static class StarShaders
             float r = length(inUv.xy - vec2(0.5f)) * 2.0f;   // 0 at the centre, 1 at the quad's edge
             float x = (r * inStar.y) / rsPsfCore;            // pixels from the centre, in core widths
 
-            // Moffat, beta = 2, normalised to unit energy:
-            //     I(r) = 1/(pi a^2) * (1 + (r/a)^2)^-2
-            // The 1/r^2 wings are what diffraction and seeing both leave, and they are why a
-            // bright star should read as a point with a halo rather than as a disc.
-            float falloff = 1.0f + x * x;
-            float psf = 1.0f / (rsPi * rsPsfCore * rsPsfCore * falloff * falloff);
+            // Moffat, normalised to unit energy:
+            //     I(r) = (beta-1)/(pi a^2) * (1 + (r/a)^2)^-beta
+            // Falling wings rather than a hard edge are what diffraction and seeing both leave,
+            // and they are why a bright star reads as a point with a halo rather than a disc.
+            float psf = (rsPsfBeta - 1.0f)
+                      / (rsPi * rsPsfCore * rsPsfCore * pow(1.0f + x * x, rsPsfBeta));
 
             float intensity = inStar.x * rsBrightness * psf;
 
@@ -290,10 +298,9 @@ internal static class StarShaders
             // edge, so the peak follows from the radius alone - no second channel needed, and
             // it stays in step with the star shader by construction.
             float edge = 1.0f + (glow / rsPsfCore) * (glow / rsPsfCore);
-            float peak = (edge * edge) / rsDisplayLevels;
+            float peak = pow(edge, rsPsfBeta) / rsDisplayLevels;
 
-            float falloff = 1.0f + x * x;
-            float intensity = peak / (falloff * falloff);
+            float intensity = peak / pow(1.0f + x * x, rsPsfBeta);
             intensity *= smoothstep(1.0f, 0.85f, r);
 
             // The engine has already scaled this colour by its own phase term. Ours is in the

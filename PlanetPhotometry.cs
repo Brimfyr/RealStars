@@ -23,7 +23,15 @@ internal static class PlanetPhotometry
     // magnitude will not match. RSCheck compares them against the GLSL.
     public const double MagRef = 5.0;         // the magnitude that peaks at 1.0 on screen
     public const double PsfCore = 1.0;        // point spread function core, pixels
-    public const double Brightness = 3.1;
+    /// <summary>
+    /// How fast the profile falls away, and so how large a bright source looks. The radius
+    /// that clears one display level grows as flux^(1/2beta), so at beta = 2 a 12 magnitude
+    /// range spread sizes over 13x and a bright moon's glint came out wider than the planet it
+    /// orbits. Real seeing-limited profiles sit between 2.5 and 4.5; 3.5 holds it to 5.6x.
+    /// </summary>
+    public const double PsfBeta = 3.5;
+    /// <summary>Carries the (beta - 1) normalisation, so beta changes width and not brightness.</summary>
+    public const double Brightness = 1.24;
     public const double DisplayLevels = 255.0;
     public const double MinGlowPx = 1.0;
 
@@ -77,8 +85,9 @@ internal static class PlanetPhotometry
     public static double GlowRadiusPx(double magnitude)
     {
         double flux = Math.Pow(10.0, -0.4 * (magnitude - MagRef));
-        double peak = flux * Brightness / (Math.PI * PsfCore * PsfCore);
-        double glow = PsfCore * Math.Sqrt(Math.Max(Math.Sqrt(peak * DisplayLevels) - 1.0, 0.0));
+        double peak = flux * Brightness * (PsfBeta - 1.0) / (Math.PI * PsfCore * PsfCore);
+        double glow = PsfCore * Math.Sqrt(
+            Math.Max(Math.Pow(peak * DisplayLevels, 1.0 / PsfBeta) - 1.0, 0.0));
         return Math.Clamp(glow, MinGlowPx, MaxGlowPx);
     }
 
