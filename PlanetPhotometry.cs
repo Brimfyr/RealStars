@@ -276,6 +276,12 @@ internal static class PlanetPhotometry
     /// these types: BodyTemplate is declared more than once down the hierarchy with different
     /// types, which reflection reports as an ambiguous match rather than resolving.
     /// </summary>
+    /// <summary>Shared with <see cref="Scintillation"/>, which walks the same hierarchies.</summary>
+    public static PropertyInfo? FindPropertyPublic(Type type, string name) => FindProperty(type, name);
+
+    /// <summary>Shared with <see cref="Scintillation"/>: the engine's double3 by component.</summary>
+    public static (double, double, double) VecPublic(object v) => Vec(v);
+
     private static PropertyInfo? FindProperty(Type type, string name)
     {
         for (Type? t = type; t != null; t = t.BaseType)

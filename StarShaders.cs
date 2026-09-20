@@ -92,6 +92,79 @@ internal static class StarShaders
             float mag = rsMagFaint - (packedScale * 255.0 - 1.0) / rsBytesPerMag;
             return pow(10.0, -0.4 * (mag - rsMagRef));
         }
+
+        // ---- scintillation ----
+        // Turbulence rearranges a wavefront on its way down, and a point source' brightness
+        // wanders as a result. Three scalings, all consequences rather than choices:
+        //   amplitude  sigma^2 goes as (sec z)^(11/6), so sigma goes as airmass^0.92 and
+        //              saturates near 1. The zenith value arrives in csPad0 from the C# side,
+        //              already carrying the body's air density and the observer's altitude.
+        //   speed      the pattern drifts past on the high-altitude wind. It is milliseconds
+        //              in truth; what an eye or a frame resolves is the low end, and it slows
+        //              towards the horizon as the path lengthens.
+        //   colour     refraction is wavelength dependent, so a low star smears into a small
+        //              spectrum. Past the angular scale in csPad1 the colours cross different
+        //              turbulence and flicker apart, which is a star flashing red and blue.
+        const float rsScintFreqHz = 25.0;      // at the zenith; slower low down
+        const float rsDispersionArcsec = 0.54; // 400-700nm separation per tan(z), Earth sea level
+        const float rsArcsecPerRad = 206265.0;
+
+        float rsHash(vec3 p)
+        {
+            return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+        }
+
+        // Value noise in time, smooth, one seed per star.
+        float rsFlicker(float t, float seed)
+        {
+            float i = floor(t), f = fract(t);
+            f = f * f * (3.0 - 2.0 * f);
+            return mix(rsHash(vec3(i, seed, 0.0)), rsHash(vec3(i + 1.0, seed, 0.0)), f) * 2.0 - 1.0;
+        }
+
+        // Two octaves, scaled to about unit variance so sigma means what it says.
+        float rsNoise(float t, float seed)
+        {
+            return (rsFlicker(t, seed) + 0.5 * rsFlicker(t * 2.17 + 13.0, seed)) * 1.9;
+        }
+
+        // Per-channel intensity multipliers. Log-normal, which is what weak scintillation
+        // actually follows, and the -sigma^2/2 keeps the MEAN brightness unchanged: a star
+        // twinkles without getting brighter or fainter on average.
+        vec3 rsScintillation(vec3 starDir, float sourceRadians, float time)
+        {
+            float sigmaZenith = global.lighting.csPad0;
+            float thetaC = global.lighting.csPad1;
+            if (sigmaZenith <= 0.0 || thetaC <= 0.0) return vec3(1.0);
+
+            // Straight up, from the camera's place above the nearby body.
+            vec3 up = -normalize(global.lighting.planetPosition.xyz);
+            float cosZ = dot(up, starDir);
+            if (cosZ <= 0.0) return vec3(1.0);                  // below the horizon
+
+            float zDeg = degrees(acos(clamp(cosZ, -1.0, 1.0)));
+            float airmass = 1.0 / (cosZ + 0.50572 * pow(max(96.07995 - zDeg, 0.1), -1.6364));
+
+            // A source wider than the pattern's own scale averages its own twinkle away.
+            float sizeRatio = sourceRadians / thetaC;
+            float suppression = pow(1.0 + sizeRatio * sizeRatio, -7.0 / 12.0);
+
+            float sigma = min(sigmaZenith * pow(airmass, 0.92), 1.0) * suppression;
+            if (sigma < 1e-3) return vec3(1.0);
+
+            float seed = rsHash(starDir * 811.7);
+            float t = time * rsScintFreqHz / sqrt(airmass);
+
+            // Colour separation, as a fraction of the correlation scale: nil overhead, total
+            // by ten degrees up, which is exactly when a bright star starts flashing colours.
+            float dispersion = rsDispersionArcsec * (sigmaZenith / 0.25) * tan(radians(min(zDeg, 89.0)));
+            float decorrelate = clamp(dispersion / (thetaC * rsArcsecPerRad), 0.0, 1.0);
+
+            vec3 n = vec3(rsNoise(t + decorrelate * 0.7, seed),
+                          rsNoise(t, seed),
+                          rsNoise(t - decorrelate * 0.7, seed));
+            return exp(sigma * n - 0.5 * sigma * sigma);
+        }
         """;
 
     public const string Vert = $$"""
@@ -134,6 +207,14 @@ internal static class StarShaders
             outColor = packedData.xyz;
 
             float flux = rsFlux(packedData.w);
+
+            // Twinkle. A star is unresolved, so it gets the full effect; the brightness and
+            // the colour move together, which is why the size is computed from the flickered
+            // flux and the colour carries only what is left over: the chroma.
+            vec3 scint = rsScintillation(normalize(position), 0.0, global.camera.time);
+            float scintMean = (scint.r + scint.g + scint.b) / 3.0;
+            flux *= scintMean;
+            outColor *= scint / max(scintMean, 1e-4);
 
             // Moffat beta = 2 at unit energy peaks at 1/(pi*core^2), so the profile crosses
             // one display level at this radius. Sizing the quad to it means the sprite is

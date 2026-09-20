@@ -105,6 +105,20 @@ public class ModMain
             ShaderShadow.Log("WARN: StaticCelestialDistanceRendering.GetApparentSizeScale not found; "
                              + "distant planets keep the game's own brightness");
 
+        // Scintillation needs the observer's air, which the shader cannot work out: the engine
+        // only refreshes its planet fields for a body with an atmosphere, so beside an airless
+        // moon they hold the last one's values. Running on that same method lets us write zero
+        // there instead of letting stars twinkle over the Moon.
+        // Declared on Program, not on a renderer, and the lighting array it fills is static.
+        Type? renderProgram = AccessTools.TypeByName("KSA.Program");
+        MethodInfo? updatePlanet = renderProgram == null
+            ? null : AccessTools.Method(renderProgram, "UpdatePlanetShaderData");
+        if (updatePlanet != null)
+            harmony.Patch(updatePlanet,
+                postfix: new HarmonyMethod(typeof(Scintillation), nameof(Scintillation.UpdatePlanetShaderDataPostfix)));
+        else
+            ShaderShadow.Log("WARN: PlanetRenderer.UpdatePlanetShaderData not found; stars will not twinkle");
+
         ShaderShadow.Log("installed (star shader redirect active"
                          + (Patches.StarBinary != null ? ", own catalogue" : ", stock catalogue")
                          + (sizeScale != null ? ", photometric planets)" : ")"));
