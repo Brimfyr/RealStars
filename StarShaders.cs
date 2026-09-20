@@ -65,13 +65,17 @@ internal static class StarShaders
         const float rsPsfCore = 1.0;
         // How fast the profile falls away, and so how large a bright source looks. Intensity
         // goes as (1 + (r/core)^2)^-beta, and the radius that clears one display level grows
-        // as flux^(1/2beta): at beta = 2 that is flux^0.25, which spreads a 12 magnitude range
-        // over 13x in size and makes a bright moon's glint wider than the planet it orbits.
-        // Real seeing-limited profiles sit between 2.5 and 4.5; 3.5 holds that range to 5.6x.
-        const float rsPsfBeta = 3.5;
+        // as flux^(1/2beta): at beta = 2 that is flux^0.25, which spread a 12 magnitude range
+        // over 13x in size and made a bright moon's glint wider than the planet it orbits.
+        // Real seeing-limited profiles sit between about 2.5 and 4.5, and this is the compact
+        // end of that, holding the same range to 4.2x. It trades halo for tightness: steeper
+        // is smaller but harder edged, so this is the knob to move for size against softness.
+        // For a uniform change that keeps the shape, use rsPsfCore instead - though below a
+        // pixel its core samples unevenly as a star drifts, and faint stars start to shimmer.
+        const float rsPsfBeta = 4.5;
         // Overall scale, so a star at the reference magnitude peaks near 1.0. It carries the
         // (beta - 1) normalisation, so changing beta alone alters width and not brightness.
-        const float rsBrightness = 1.24;
+        const float rsBrightness = 0.886;
         // One display level out of 8-bit, the level below which a wing cannot show.
         const float rsDisplayLevels = 255.0;
         // Largest glow a point source may draw, in pixels of radius. The radius grows as the

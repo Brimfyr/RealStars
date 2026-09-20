@@ -26,12 +26,14 @@ internal static class PlanetPhotometry
     /// <summary>
     /// How fast the profile falls away, and so how large a bright source looks. The radius
     /// that clears one display level grows as flux^(1/2beta), so at beta = 2 a 12 magnitude
-    /// range spread sizes over 13x and a bright moon's glint came out wider than the planet it
-    /// orbits. Real seeing-limited profiles sit between 2.5 and 4.5; 3.5 holds it to 5.6x.
+    /// range spread sizes over 13x and a bright moon's glint came out wider than the planet
+    /// it orbits. Real seeing-limited profiles sit between about 2.5 and 4.5, and this is the
+    /// compact end of that, holding the same range to 4.2x. Steeper means smaller but harder
+    /// edged; <see cref="PsfCore"/> is the knob that shrinks without changing the shape.
     /// </summary>
-    public const double PsfBeta = 3.5;
+    public const double PsfBeta = 4.5;
     /// <summary>Carries the (beta - 1) normalisation, so beta changes width and not brightness.</summary>
-    public const double Brightness = 1.24;
+    public const double Brightness = 0.886;
     public const double DisplayLevels = 255.0;
     public const double MinGlowPx = 1.0;
 
