@@ -111,53 +111,80 @@ internal static class Scintillation
         }
     }
 
+    private static bool _diagnosed;
+
+    /// <summary>
+    /// Says once, on the first body we look at, what we found and what came of it. A silent
+    /// zero here is indistinguishable from working correctly in space, which is exactly how a
+    /// density reader that always returned nothing went unnoticed until someone looked up.
+    /// </summary>
+    private static (double, double) Diagnose(string what, double sigma, double thetaC)
+    {
+        if (!_diagnosed)
+        {
+            ShaderShadow.Log($"scintillation: {what} -> sigma {sigma:F4}"
+                             + (thetaC > 0 ? $", sources under {thetaC * 206265.0:F2} arcsec twinkle" : ""));
+            _diagnosed = true;
+        }
+        return (sigma, thetaC);
+    }
+
     /// <summary>The observer's air, from the body they are near.</summary>
     private static (double, double) Measure(object celestial, object viewport)
     {
+        string name = celestial.GetType().Name;
+
         _bodyTemplateProp ??= PlanetPhotometry.FindPropertyPublic(celestial.GetType(), "BodyTemplate");
         object? template = _bodyTemplateProp?.GetValue(celestial);
-        if (template == null) return (0.0, 0.0);
+        if (template == null) return Diagnose($"{name} has no body template", 0.0, 0.0);
 
         _atmosphereField ??= AccessTools.Field(template.GetType(), "AtmosphereReference");
         object? atmosphere = _atmosphereField?.GetValue(template);
-        if (atmosphere == null) return (0.0, 0.0);           // airless: no twinkling, no stale values
+        if (atmosphere == null) return Diagnose($"{name} is airless", 0.0, 0.0);
 
         _physicalField ??= AccessTools.Field(atmosphere.GetType(), "Physical");
         object? physical = _physicalField?.GetValue(atmosphere);
-        if (physical == null) return (0.0, 0.0);
+        if (physical == null) return Diagnose($"{name} has no physical atmosphere", 0.0, 0.0);
 
         _densityField ??= AccessTools.Field(physical.GetType(), "SeaLevelDensity");
         _scaleHeightField ??= AccessTools.Field(physical.GetType(), "ScaleHeight");
         double density = Reference(_densityField?.GetValue(physical));
         double scaleHeight = Reference(_scaleHeightField?.GetValue(physical));
-        if (density <= 0.0 || scaleHeight <= 0.0) return (0.0, 0.0);
+        if (density <= 0.0 || scaleHeight <= 0.0)
+            return Diagnose($"{name} read as density {density:G3} kg/m3, scale height {scaleHeight:G3} m",
+                            0.0, 0.0);
 
         _meanRadius ??= PlanetPhotometry.FindPropertyPublic(celestial.GetType(), "MeanRadius");
-        if (_meanRadius?.GetValue(celestial) is not double radius) return (0.0, 0.0);
+        if (_meanRadius?.GetValue(celestial) is not double radius)
+            return Diagnose($"{name} has no readable radius", 0.0, 0.0);
 
         _getCamera ??= AccessTools.Method(viewport.GetType(), "GetCamera");
         object? camera = _getCamera?.Invoke(viewport, null);
-        if (camera == null) return (0.0, 0.0);
+        if (camera == null) return Diagnose("no camera on the viewport", 0.0, 0.0);
         _getPositionEgo ??= AccessTools.Method(camera.GetType(), "GetPositionEgo",
                                                new[] { AccessTools.TypeByName("KSA.IOrbiter")! });
         object? ego = _getPositionEgo?.Invoke(camera, new[] { celestial });
-        if (ego == null) return (0.0, 0.0);
+        if (ego == null) return Diagnose($"no camera position relative to {name}", 0.0, 0.0);
 
         (double x, double y, double z) = PlanetPhotometry.VecPublic(ego);
         double altitude = Math.Sqrt(x * x + y * y + z * z) - radius;
 
-        return ForObserver(density, scaleHeight, altitude);
+        (double sigma, double thetaC) = ForObserver(density, scaleHeight, altitude);
+        return Diagnose($"{name}, {density:G3} kg/m3 at the surface, scale height {scaleHeight / 1000:F1} km, "
+                        + $"camera {altitude / 1000:F0} km up", sigma, thetaC);
     }
 
-    /// <summary>A DensityReference or DistanceReference, as a plain number in SI units.</summary>
-    private static double Reference(object? reference)
+    /// <summary>
+    /// A DensityReference or DistanceReference, as a plain number in SI units. InMeters() first
+    /// where it exists, because a distance says nothing about its own units otherwise.
+    /// </summary>
+    public static double Reference(object? reference)
     {
         if (reference == null) return 0.0;
-        double? direct = PlanetPhotometry.ReadFloat(reference);
-        if (direct != null) return direct.Value;
 
-        // DistanceReference keeps its number behind InMeters().
         MethodInfo? inMeters = AccessTools.Method(reference.GetType(), "InMeters");
-        return inMeters?.Invoke(reference, null) is double m ? m : 0.0;
+        if (inMeters?.Invoke(reference, null) is double m) return m;
+
+        return PlanetPhotometry.ReadFloat(reference) ?? 0.0;
     }
 }

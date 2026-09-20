@@ -503,20 +503,36 @@ internal static class PlanetPhotometry
     }
 
     /// <summary>
-    /// The number inside one of the engine's FloatReference wrappers.
+    /// The number inside one of the engine's reference wrappers, whichever kind it is.
     ///
-    /// Its Value is a FIELD, not a property. Worth being explicit about: looking only for a
-    /// property finds nothing and throws nothing, so every body quietly takes the 0.5 fallback,
-    /// which is over a magnitude out on somewhere as dark as Mars.
+    /// They do not agree with each other, which has cost two bugs now. FloatReference keeps a
+    /// public Value FIELD - not a property, so a property-only lookup silently finds nothing.
+    /// DensityReference has no Value at all: unit fields like KgPerM3, a private _value, and an
+    /// implicit conversion to double. A reader that assumed otherwise returned nothing, the
+    /// caller fell back to zero, and stars stopped twinkling everywhere.
+    ///
+    /// So: the implicit conversion first, since every one of them defines it and it is the
+    /// engine's own way of unwrapping these, then the named field, then the private one.
     /// </summary>
     public static double? ReadFloat(object reference)
     {
         Type at = reference.GetType();
         if (!_albedoValues.TryGetValue(at, out MemberInfo? vm))
-            _albedoValues[at] = vm = (MemberInfo?)AccessTools.Field(at, "Value") ?? FindProperty(at, "Value");
+        {
+            _albedoValues[at] = vm =
+                (MemberInfo?)at.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    .FirstOrDefault(m => m.Name == "op_Implicit"
+                                      && (m.ReturnType == typeof(double) || m.ReturnType == typeof(float))
+                                      && m.GetParameters().Length == 1
+                                      && m.GetParameters()[0].ParameterType == at)
+                ?? (MemberInfo?)AccessTools.Field(at, "Value")
+                ?? (MemberInfo?)FindProperty(at, "Value")
+                ?? AccessTools.Field(at, "_value");
+        }
 
         object? value = vm switch
         {
+            MethodInfo m => m.Invoke(null, new[] { reference }),
             FieldInfo f => f.GetValue(reference),
             PropertyInfo p => p.GetValue(reference),
             _ => null
