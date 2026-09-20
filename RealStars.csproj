@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Version>0.1.0</Version>
+    <AssemblyName>RealStars</AssemblyName>
+    <RootNamespace>RealStars</RootNamespace>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <!-- StarMap loader folder: provides StarMap.API + 0Harmony at build time. Borea keeps its own
+         copy of the loader; fall back to a standalone StarMap launcher install if Borea is absent. -->
+    <StarMapDir Condition="'$(StarMapDir)' == '' And Exists('$(LOCALAPPDATA)\Borea\Loaders\StarMap\StarMap.API.dll')">$(LOCALAPPDATA)\Borea\Loaders\StarMap</StarMapDir>
+    <StarMapDir Condition="'$(StarMapDir)' == ''">$(USERPROFILE)\Documents\StarMapLauncher-0.4.5</StarMapDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="StarMap.API">
+      <HintPath>$(StarMapDir)\StarMap.API.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(StarMapDir)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,5 @@
+# Assets that ship with Real Stars (filenames inside assets/).
+# Read by BOTH package.ps1 (player zip) and deploy.ps1 (local install), so they always match.
+# Anything in assets/ that is NOT listed here is a converter source or a stale output and never ships.
+#
+# Empty for now: the shader work needs no assets. A star catalogue lands here when parallax does.

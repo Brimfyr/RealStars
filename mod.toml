@@ -1,0 +1,4 @@
+name = "Real Stars"
+
+[StarMap]
+EntryAssembly = "RealStars"
