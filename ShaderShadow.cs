@@ -27,9 +27,16 @@ internal static class ShaderShadow
     /// <summary>Absolute path of our patched Shaders directory, or null if the build failed.</summary>
     public static string? ShadersRoot;
 
-    /// <summary>The shaders we patch, by file name. Nothing else is redirected.</summary>
-    public static readonly string[] PatchedShaders =
-        StarShaders.All.Select(s => s.Name).ToArray();
+    /// <summary>
+    /// The shaders we patch, by file name; nothing else is redirected. Set by <see cref="Build"/>,
+    /// because the planet pair is only ours when the photometry that feeds them is in place: our
+    /// shaders read scalePixel as a glow radius, and serving them the game's own sizing draws
+    /// every distant body four times too large and far too bright with it.
+    /// </summary>
+    public static string[] PatchedShaders { get; private set; } = Array.Empty<string>();
+
+    private static readonly string[] PlanetShaders =
+        { "StaticCelestialDistance.vert", "StaticCelestialDistance.frag" };
 
     private static string? _logFile;
 
@@ -51,8 +58,11 @@ internal static class ShaderShadow
         catch { /* logging must never take the game down */ }
     }
 
-    public static void Build(string coreDir, string modDir)
+    public static void Build(string coreDir, string modDir, bool patchPlanets = true)
     {
+        PatchedShaders = StarShaders.All.Select(s => s.Name)
+            .Where(n => patchPlanets || !PlanetShaders.Contains(n))
+            .ToArray();
         try
         {
             _logFile = Path.Combine(modDir, "RealStars.log");

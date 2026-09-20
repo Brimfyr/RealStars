@@ -56,7 +56,13 @@ public class ModMain
         if (!Directory.Exists(coreDir))
             throw new DirectoryNotFoundException("Core content not found at " + coreDir);
 
-        ShaderShadow.Build(coreDir, modDir);
+        // Resolved before the shadow is built: the planet shaders are only ours if we can also
+        // patch the sizing that feeds them, or they would be reading the game's numbers in our
+        // units.
+        Type? distance = AccessTools.TypeByName("KSA.StaticCelestialDistanceRendering");
+        MethodInfo? sizeScale = distance == null ? null : AccessTools.Method(distance, "GetApparentSizeScale");
+
+        ShaderShadow.Build(coreDir, modDir, patchPlanets: sizeScale != null);
 
         var harmony = new Harmony("gunshy.realstars");
 
@@ -91,12 +97,10 @@ public class ModMain
         }
 
         // Distant planets, onto the same magnitude scale as the stars. Fail-soft: without this
-        // the sky is still ours, the planets just keep the game's radius-based sizing.
-        Type? distance = AccessTools.TypeByName("KSA.StaticCelestialDistanceRendering");
-        MethodInfo? sizeScale = distance == null ? null : AccessTools.Method(distance, "GetApparentSizeScale");
+        // the sky is still ours, the planets just keep the game's own look entirely.
         if (sizeScale != null)
             harmony.Patch(sizeScale,
-                prefix: new HarmonyMethod(typeof(PlanetPhotometry), nameof(PlanetPhotometry.ApparentSizeScalePrefix)));
+                postfix: new HarmonyMethod(typeof(PlanetPhotometry), nameof(PlanetPhotometry.ApparentSizeScalePostfix)));
         else
             ShaderShadow.Log("WARN: StaticCelestialDistanceRendering.GetApparentSizeScale not found; "
                              + "distant planets keep the game's own brightness");
