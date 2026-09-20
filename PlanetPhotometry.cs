@@ -27,6 +27,21 @@ internal static class PlanetPhotometry
     public const double DisplayLevels = 255.0;
     public const double MinGlowPx = 1.0;
 
+    /// <summary>
+    /// Largest glow a point source may draw, in pixels of radius.
+    ///
+    /// The radius where the profile crosses one display level grows as the fourth root of
+    /// flux, which is well behaved across a real sky: Sirius is 18 px and Venus at its very
+    /// best is 40. A planet seen from a few million kilometres is another matter - Earth from
+    /// 10 Mkm is magnitude -9.7, and the same rule asks for 117 px, which is how a distant
+    /// planet ended up as a blob a fifth of the screen across. Real glare does not grow without
+    /// bound either, and a body this bright is about to be drawn as a sphere anyway.
+    ///
+    /// 40 px is chosen to leave the entire real sky alone: nothing fainter than magnitude -5,
+    /// which is brighter than Venus ever gets, reaches it.
+    /// </summary>
+    public const double MaxGlowPx = 40.0;
+
     private const double Au = 1.495978707e11;
 
     /// <summary>
@@ -63,7 +78,8 @@ internal static class PlanetPhotometry
     {
         double flux = Math.Pow(10.0, -0.4 * (magnitude - MagRef));
         double peak = flux * Brightness / (Math.PI * PsfCore * PsfCore);
-        return Math.Max(MinGlowPx, PsfCore * Math.Sqrt(Math.Max(Math.Sqrt(peak * DisplayLevels) - 1.0, 0.0)));
+        double glow = PsfCore * Math.Sqrt(Math.Max(Math.Sqrt(peak * DisplayLevels) - 1.0, 0.0));
+        return Math.Clamp(glow, MinGlowPx, MaxGlowPx);
     }
 
     /// <summary>The blend the caller applies after us: full sprite below 1 px across, gone by 4,

@@ -67,6 +67,12 @@ internal static class StarShaders
         const float rsBrightness = 3.1;
         // One display level out of 8-bit, the level below which a wing cannot show.
         const float rsDisplayLevels = 255.0;
+        // Largest glow a point source may draw, in pixels of radius. The radius grows as the
+        // fourth root of flux, which behaves across a real sky - Sirius is 18 px, Venus at its
+        // best 40 - but a planet seen from a few million kilometres reaches magnitude -10 and
+        // upwards, where the same rule asks for hundreds of pixels. Nothing fainter than
+        // magnitude -5 reaches this, so the sky proper is untouched.
+        const float rsMaxGlowPx = 40.0;
         const float rsPi = 3.14159265;
 
         // Byte back to flux. Pogson: five magnitudes is a factor of a hundred.
@@ -122,8 +128,8 @@ internal static class StarShaders
             // one display level at this radius. Sizing the quad to it means the sprite is
             // exactly the star's visible extent and never a disc with a hard edge.
             float peak = flux * rsBrightness / (rsPi * rsPsfCore * rsPsfCore);
-            float glowPx = max(rsMinGlowPx,
-                               rsPsfCore * sqrt(max(sqrt(peak * rsDisplayLevels) - 1.0, 0.0)));
+            float glowPx = clamp(rsPsfCore * sqrt(max(sqrt(peak * rsDisplayLevels) - 1.0, 0.0)),
+                                 rsMinGlowPx, rsMaxGlowPx);
 
             outUv = uv[gl_VertexIndex];
             outStar = vec2(flux, glowPx);
