@@ -61,11 +61,21 @@ internal static class Scintillation
 
     // ------------------------------------------------------------------ reflection glue
     private static FieldInfo? _lightingArray;
-    private static PropertyInfo? _shaderSlot, _meanRadius, _bodyTemplateProp;
+    private static PropertyInfo? _meanRadius, _bodyTemplateProp;
     private static FieldInfo? _atmosphereField, _physicalField, _densityField, _scaleHeightField;
-    private static MethodInfo? _getCamera, _getPositionEgo;
+    private static readonly Dictionary<Type, MethodInfo?> _positionEgos = new();
     private static FieldInfo? _pad0, _pad1;
-    private static bool _failed, _logged;
+    private static bool _logged;
+
+    // Per TYPE, because the game has more than one kind of viewport and more than one kind of
+    // camera: a member resolved from a part thumbnail's viewport throws when handed the game's.
+    // Caching one of each was what froze scintillation at whatever the first frame saw.
+    private static readonly Dictionary<Type, PropertyInfo?> _shaderSlots = new();
+    private static readonly Dictionary<Type, MethodInfo?> _cameras = new();
+
+    // A bad frame should cost that frame, not the feature. Only a persistent fault disables it.
+    private static int _consecutiveFailures;
+    private const int GiveUpAfter = 120;
 
     /// <summary>
     /// Postfix on PlanetRenderer.UpdatePlanetShaderData: work out the observer's air and leave
@@ -73,7 +83,7 @@ internal static class Scintillation
     /// </summary>
     public static void UpdatePlanetShaderDataPostfix(object __instance, object? nearbyCelestial, object viewport)
     {
-        if (_failed) return;
+        if (_consecutiveFailures >= GiveUpAfter) return;
         try
         {
             double sigma = 0.0, thetaC = 0.0;
@@ -84,18 +94,21 @@ internal static class Scintillation
             _lightingArray ??= AccessTools.Field(__instance.GetType(), "_lightingData");
             if (_lightingArray?.GetValue(null) is not Array lighting) return;
 
-            _shaderSlot ??= AccessTools.Property(viewport.GetType(), "ShaderSlot");
-            if (_shaderSlot?.GetValue(viewport) is not int slot
+            Type vt = viewport.GetType();
+            if (!_shaderSlots.TryGetValue(vt, out PropertyInfo? slotProp))
+                _shaderSlots[vt] = slotProp = AccessTools.Property(vt, "ShaderSlot");
+            if (slotProp?.GetValue(viewport) is not int slot
                 || slot < 0 || slot >= lighting.Length) return;
 
             // A struct in an array: take a copy, set the private pads, put it back.
             object box = lighting.GetValue(slot)!;
             _pad0 ??= AccessTools.Field(box.GetType(), "csPad0");
             _pad1 ??= AccessTools.Field(box.GetType(), "csPad1");
-            if (_pad0 == null || _pad1 == null) { _failed = true; return; }
+            if (_pad0 == null || _pad1 == null) { _consecutiveFailures = GiveUpAfter; return; }
             _pad0.SetValue(box, (float)sigma);
             _pad1.SetValue(box, (float)thetaC);
             lighting.SetValue(box, slot);
+            _consecutiveFailures = 0;
 
             if (!_logged && sigma > 0.0)
             {
@@ -106,8 +119,12 @@ internal static class Scintillation
         }
         catch (Exception ex)
         {
-            _failed = true;
-            ShaderShadow.Log("WARN: scintillation disabled after an error; stars hold steady. " + ex.Message);
+            // One bad frame must not cost the feature: giving up permanently is what froze the
+            // last good value into the uniform, so the sky kept twinkling on the Moon.
+            if (_consecutiveFailures++ == 0)
+                ShaderShadow.Log("WARN: scintillation hit an error (retrying): " + ex.Message);
+            else if (_consecutiveFailures == GiveUpAfter)
+                ShaderShadow.Log("WARN: scintillation failing persistently; stars will hold steady");
         }
     }
 
@@ -158,12 +175,17 @@ internal static class Scintillation
         if (_meanRadius?.GetValue(celestial) is not double radius)
             return Diagnose($"{name} has no readable radius", 0.0, 0.0);
 
-        _getCamera ??= AccessTools.Method(viewport.GetType(), "GetCamera");
-        object? camera = _getCamera?.Invoke(viewport, null);
+        Type vt = viewport.GetType();
+        if (!_cameras.TryGetValue(vt, out MethodInfo? getCamera))
+            _cameras[vt] = getCamera = AccessTools.Method(vt, "GetCamera");
+        object? camera = getCamera?.Invoke(viewport, null);
         if (camera == null) return Diagnose("no camera on the viewport", 0.0, 0.0);
-        _getPositionEgo ??= AccessTools.Method(camera.GetType(), "GetPositionEgo",
-                                               new[] { AccessTools.TypeByName("KSA.IOrbiter")! });
-        object? ego = _getPositionEgo?.Invoke(camera, new[] { celestial });
+        // Per camera type too: a thumbnail viewport's camera need not be the game's class.
+        Type ct = camera.GetType();
+        if (!_positionEgos.TryGetValue(ct, out MethodInfo? positionEgo))
+            _positionEgos[ct] = positionEgo = AccessTools.Method(ct, "GetPositionEgo",
+                                                new[] { AccessTools.TypeByName("KSA.IOrbiter")! });
+        object? ego = positionEgo?.Invoke(camera, new[] { celestial });
         if (ego == null) return Diagnose($"no camera position relative to {name}", 0.0, 0.0);
 
         (double x, double y, double z) = PlanetPhotometry.VecPublic(ego);

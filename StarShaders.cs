@@ -105,9 +105,16 @@ internal static class StarShaders
         //   colour     refraction is wavelength dependent, so a low star smears into a small
         //              spectrum. Past the angular scale in csPad1 the colours cross different
         //              turbulence and flicker apart, which is a star flashing red and blue.
-        const float rsScintFreqHz = 25.0;      // at the zenith; slower low down
+        const float rsScintFreqHz = 34.0;      // at the zenith; slower low down
         const float rsDispersionArcsec = 0.54; // 400-700nm separation per tan(z), Earth sea level
         const float rsArcsecPerRad = 206265.0;
+        // Two knobs of taste, applied on top of the physics. The theory is calibrated for a
+        // dark-adapted eye staring at one star; on a screen the full amount reads as a strobe,
+        // and the colour separation especially so. Both scale a physically derived result
+        // rather than replacing it, so the relative behaviour - deeper and slower and more
+        // colourful towards the horizon, gone in space - is untouched.
+        const float rsScintScale = 0.55;
+        const float rsChromaScale = 0.30;
 
         float rsHash(vec3 p)
         {
@@ -122,10 +129,15 @@ internal static class StarShaders
             return mix(rsHash(vec3(i, seed, 0.0)), rsHash(vec3(i + 1.0, seed, 0.0)), f) * 2.0 - 1.0;
         }
 
-        // Two octaves, scaled to about unit variance so sigma means what it says.
+        // Three octaves, scaled to about unit variance so sigma means what it says. Two was
+        // enough to move a star but not to look like air: the fundamental dominated, so every
+        // excursion went most of the way and it read as blinking rather than shimmering. The
+        // extra octave fills in the small, partial fluctuations between the big ones.
         float rsNoise(float t, float seed)
         {
-            return (rsFlicker(t, seed) + 0.5 * rsFlicker(t * 2.17 + 13.0, seed)) * 1.9;
+            return (rsFlicker(t, seed)
+                  + 0.55 * rsFlicker(t * 2.17 + 13.0, seed)
+                  + 0.30 * rsFlicker(t * 4.61 + 71.0, seed)) * 1.55;
         }
 
         // Per-channel intensity multipliers. Log-normal, which is what weak scintillation
@@ -149,7 +161,7 @@ internal static class StarShaders
             float sizeRatio = sourceRadians / thetaC;
             float suppression = pow(1.0 + sizeRatio * sizeRatio, -7.0 / 12.0);
 
-            float sigma = min(sigmaZenith * pow(airmass, 0.92), 1.0) * suppression;
+            float sigma = min(sigmaZenith * pow(airmass, 0.92), 1.0) * suppression * rsScintScale;
             if (sigma < 1e-3) return vec3(1.0);
 
             float seed = rsHash(starDir * 811.7);
@@ -158,7 +170,7 @@ internal static class StarShaders
             // Colour separation, as a fraction of the correlation scale: nil overhead, total
             // by ten degrees up, which is exactly when a bright star starts flashing colours.
             float dispersion = rsDispersionArcsec * (sigmaZenith / 0.25) * tan(radians(min(zDeg, 89.0)));
-            float decorrelate = clamp(dispersion / (thetaC * rsArcsecPerRad), 0.0, 1.0);
+            float decorrelate = clamp(dispersion / (thetaC * rsArcsecPerRad), 0.0, 1.0) * rsChromaScale;
 
             vec3 n = vec3(rsNoise(t + decorrelate * 0.7, seed),
                           rsNoise(t, seed),
