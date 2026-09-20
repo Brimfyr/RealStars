@@ -341,10 +341,21 @@ internal static class PlanetPhotometry
         if (_diameterPixels?.Invoke(camera, new object[] { 2.0 * radius, obsDist }) is double px)
             pixelDiameter = px;
 
-        return ApparentMagnitude(radius, albedo, sunDist, obsDist, cosPhase,
-                                 HasAtmosphere(celestial),
-                                 Rings(celestial, template, radius, albedo, ex, ey, ez, gx, gy, gz),
-                                 Lit(celestial, ex, ey, ez));
+        double magnitude = ApparentMagnitude(radius, albedo, sunDist, obsDist, cosPhase,
+                                             HasAtmosphere(celestial),
+                                             Rings(celestial, template, radius, albedo, ex, ey, ez, gx, gy, gz),
+                                             Lit(celestial, ex, ey, ez));
+
+        // Twinkling, damped by the body's own angular size. A planet is a disc rather than a
+        // point, so it averages over many turbulent cells and holds much steadier than a star:
+        // Neptune at 2.3 arcsec keeps about half the effect, Jupiter at 40 keeps two percent.
+        // The sprite is sized from this magnitude, so brightness and size flicker together.
+        double factor = Scintillation.Factor(2.0 * radius / obsDist, gx, gy, gz,
+                                             System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(celestial),
+                                             Scintillation.Now);
+        if (factor != 1.0) magnitude -= 2.5 * Math.Log10(Math.Max(factor, 1e-6));
+
+        return magnitude;
     }
 
     private static Type? _atmosphericType;

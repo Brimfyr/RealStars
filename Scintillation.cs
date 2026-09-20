@@ -59,6 +59,73 @@ internal static class Scintillation
         return (sigma, thetaC);
     }
 
+    /// <summary>
+    /// How much of the physical amount actually reaches the screen. The theory is calibrated
+    /// for a dark-adapted eye on one star, which on a display reads as a strobe. Mirrors
+    /// rsScintScale in the shader, and the checks fail if the two drift apart.
+    /// </summary>
+    public const double VisualScale = 0.55;
+
+    // What the star shader gets through the uniform, kept here for the planet path as well:
+    // the sprites are sized on the CPU, so their twinkle has to be applied there too. Recorded
+    // from the main viewport only - a part thumbnail's camera sits inside a part, where the air
+    // is whatever the body's surface density says, and that must not drive the sky.
+    public static double LastSigmaZenith, LastThetaC;      // written by the postfix below
+    private static double _upX, _upY, _upZ;
+    private static readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+
+    /// <summary>Seconds since the mod loaded. The shader has its own clock; they need not agree.</summary>
+    public static double Now => _clock.Elapsed.TotalSeconds;
+
+    /// <summary>
+    /// The intensity multiplier for a source of this angular diameter in this direction, or 1
+    /// when there is no air. Same profile as the shader's, minus the colour separation: an
+    /// extended source averages that away by the same argument that damps its twinkling, so
+    /// planets shimmer without flashing colours.
+    /// </summary>
+    public static double Factor(double angularDiameterRad, double dirX, double dirY, double dirZ,
+                                int seed, double timeSeconds)
+    {
+        if (LastSigmaZenith <= 0.0 || LastThetaC <= 0.0) return 1.0;
+
+        double len = Math.Sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+        if (len <= 0.0) return 1.0;
+        double cosZ = (_upX * dirX + _upY * dirY + _upZ * dirZ) / len;
+        if (cosZ <= 0.0) return 1.0;                       // below the horizon
+
+        double zDeg = Math.Acos(Math.Clamp(cosZ, -1.0, 1.0)) * 180.0 / Math.PI;
+        double airmass = 1.0 / (cosZ + 0.50572 * Math.Pow(Math.Max(96.07995 - zDeg, 0.1), -1.6364));
+
+        double ratio = angularDiameterRad / LastThetaC;
+        double suppression = Math.Pow(1.0 + ratio * ratio, -7.0 / 12.0);
+
+        double sigma = Math.Min(LastSigmaZenith * Math.Pow(airmass, 0.92), 1.0)
+                     * suppression * VisualScale;
+        if (sigma < 1e-3) return 1.0;
+
+        double t = timeSeconds * 34.0 / Math.Sqrt(airmass);
+        return Math.Exp(sigma * Noise(t, seed) - 0.5 * sigma * sigma);
+    }
+
+    // The shader's noise, in C#: three octaves of smooth value noise at about unit variance.
+    private static double Hash(double a, double b)
+    {
+        double v = Math.Sin(a * 12.9898 + b * 78.233) * 43758.5453;
+        return v - Math.Floor(v);
+    }
+
+    private static double Flicker(double t, double seed)
+    {
+        double i = Math.Floor(t), f = t - i;
+        f = f * f * (3.0 - 2.0 * f);
+        return (Hash(i, seed) * (1.0 - f) + Hash(i + 1.0, seed) * f) * 2.0 - 1.0;
+    }
+
+    private static double Noise(double t, double seed)
+        => (Flicker(t, seed)
+          + 0.55 * Flicker(t * 2.17 + 13.0, seed)
+          + 0.30 * Flicker(t * 4.61 + 71.0, seed)) * 1.55;
+
     // ------------------------------------------------------------------ reflection glue
     private static FieldInfo? _lightingArray;
     private static PropertyInfo? _meanRadius, _bodyTemplateProp;
@@ -189,11 +256,38 @@ internal static class Scintillation
         if (ego == null) return Diagnose($"no camera position relative to {name}", 0.0, 0.0);
 
         (double x, double y, double z) = PlanetPhotometry.VecPublic(ego);
-        double altitude = Math.Sqrt(x * x + y * y + z * z) - radius;
+        double distance = Math.Sqrt(x * x + y * y + z * z);
+        double altitude = distance - radius;
 
         (double sigma, double thetaC) = ForObserver(density, scaleHeight, altitude);
+
+        // Keep the main view's air for the planet sprites, which are sized on the CPU. The
+        // zenith is straight up from the body's centre, and ego points from camera to body,
+        // so it is that reversed.
+        if (IsMainViewport(viewport) && distance > 0.0)
+        {
+            LastSigmaZenith = sigma;
+            LastThetaC = thetaC;
+            _upX = -x / distance; _upY = -y / distance; _upZ = -z / distance;
+        }
         return Diagnose($"{name}, {density:G3} kg/m3 at the surface, scale height {scaleHeight / 1000:F1} km, "
                         + $"camera {altitude / 1000:F0} km up", sigma, thetaC);
+    }
+
+    private static PropertyInfo? _mainViewportProp;
+    private static bool _mainViewportLookedUp;
+
+    /// <summary>Is this the view the player is looking through, rather than a thumbnail?</summary>
+    private static bool IsMainViewport(object viewport)
+    {
+        if (!_mainViewportLookedUp)
+        {
+            Type? program = AccessTools.TypeByName("KSA.Program");
+            _mainViewportProp = program == null ? null : AccessTools.Property(program, "MainViewport");
+            _mainViewportLookedUp = true;
+        }
+        // With no way to tell, assume it is: a wrong zenith is better than no twinkling at all.
+        return _mainViewportProp == null || ReferenceEquals(_mainViewportProp.GetValue(null), viewport);
     }
 
     /// <summary>
