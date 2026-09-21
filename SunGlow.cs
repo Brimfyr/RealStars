@@ -38,16 +38,26 @@ internal static class SunGlow
     /// The handover, in pixels of the Sun's disc RADIUS. The engine's sprite holds above the
     /// first, ours holds below the second, and they cross over between.
     ///
-    /// This has to sit where the sphere stops being drawn, around 1.45 AU, or there is a gap
-    /// in between where the engine's hundred-pixel halo is the only thing left and the Sun
-    /// reads as a soft gradient blob. A first attempt handed over at 2 px down to 1, which
-    /// sounds tight until you convert it: the disc radius is about 6.5e11 / distance, so that
-    /// window is 2.2 AU to 4.3 AU - Ceres to nearly Jupiter, all of it gradient.
+    /// These have to be read in AU to mean anything, because the disc radius is about
+    /// 6.5e11 / distance: a window that sounds tight in pixels can be an astronomical unit
+    /// wide. Two attempts got this wrong in the same way, each time leaving a stretch where the
+    /// sphere had shrunk away and ours had not arrived, so the engine's hundred-pixel halo was
+    /// the only thing drawing the Sun - the soft gradient blob.
     ///
-    /// The shader mirrors both numbers; the checks fail if they drift apart.
+    ///     2 px -> 1 px      2.2 to 4.3 AU    Ceres to nearly Jupiter
+    ///     3 px -> 2.5 px    1.45 to 1.74 AU  just past Mars
+    ///     4.5 px -> 3.5 px  0.97 to 1.24 AU  just past Earth, where the halo takes over
+    ///
+    /// The last is the one that matters: the halo starts dominating the look a little after
+    /// Earth, while the sphere is still being drawn, so ours has to be in by then. The two
+    /// overlapping for a fraction of an AU is fine - a small disc with glare around it is what
+    /// the Sun looks like there.
+    ///
+    /// The shader mirrors both numbers; the checks convert them back into AU and fail if they
+    /// drift, because in pixels this mistake is invisible.
     /// </summary>
-    public const double HandoverStartPx = 3.0;     // engine alone above this
-    public const double HandoverEndPx = 2.5;       // ours alone below it
+    public const double HandoverStartPx = 4.5;     // engine alone above this
+    public const double HandoverEndPx = 3.5;       // ours alone below it
 
     /// <summary>
     /// What a star of this radius would look like from this distance, in magnitudes.
