@@ -125,6 +125,16 @@ public class ModMain
         else
             ShaderShadow.Log("WARN: PlanetRenderer.UpdatePlanetShaderData not found; stars will not twinkle");
 
+        // The Sun's distant sprite, onto the same scale as the stars. Its two sizes are floored
+        // by the engine, so it stops shrinking once it is a sprite at all.
+        MethodInfo? updateShaderData = renderProgram == null
+            ? null : AccessTools.Method(renderProgram, "UpdateShaderData", new[] { typeof(double), AccessTools.TypeByName("KSA.IViewport")! });
+        if (updateShaderData != null)
+            harmony.Patch(updateShaderData,
+                postfix: new HarmonyMethod(typeof(SunGlow), nameof(SunGlow.UpdateShaderDataPostfix)));
+        else
+            ShaderShadow.Log("WARN: Program.UpdateShaderData not found; the Sun keeps its stock sprite");
+
         ShaderShadow.Log("installed (star shader redirect active"
                          + (Patches.StarBinary != null ? ", own catalogue" : ", stock catalogue")
                          + (sizeScale != null ? ", photometric planets)" : ")"));
