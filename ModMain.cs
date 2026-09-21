@@ -88,6 +88,12 @@ public class ModMain
                     ?? throw new InvalidOperationException($"Mod.{name} not found");
                 harmony.Patch(m, prefix: starsPrefix);
             }
+
+            // The count still comes from our file's header through the swap above, but the
+            // loading itself is ours: the game's reader would normalise away the distances.
+            MethodInfo load = AccessTools.Method(modType, "LoadStarBinaries")!;
+            harmony.Patch(load, prefix: new HarmonyMethod(typeof(Patches),
+                                            nameof(Patches.LoadStarBinariesPrefix)) { priority = Priority.Low });
         }
         else
         {
@@ -170,6 +176,84 @@ internal static class Patches
 
     /// <summary>Absolute path of our catalogue, or null when it is missing.</summary>
     public static string? StarBinary;
+
+    private static MethodInfo? _addInstance;
+    private static ConstructorInfo? _float3Ctor;
+    private static Type? _spriteType;
+    private static FieldInfo? _spritePosition, _spritePacked;
+    private static PropertyInfo? _mainViewportProp;
+    private static bool _loadedStars;
+
+    /// <summary>
+    /// Prefix on Mod.LoadStarBinaries: load our own catalogue and skip the game's reader.
+    ///
+    /// The game's reader normalises every star onto a shell of one radius, which is all a
+    /// painted sky needs. Ours keeps the star's true position in parsecs, so the shader can
+    /// work out the direction from wherever the observer is - that is the whole of parallax -
+    /// and the distance that sets how bright it looks from there.
+    ///
+    /// The public AddInstance normalises too, so this uses the overload that takes the instance
+    /// struct whole.
+    /// </summary>
+    public static bool LoadStarBinariesPrefix(object __instance, object starTechnique)
+    {
+        if (StarBinary == null || !File.Exists(StarBinary)) return true;
+
+        _idProp ??= __instance.GetType().GetProperty("Id");
+        if (_idProp?.GetValue(__instance) is not string id
+            || !id.Equals("Core", StringComparison.OrdinalIgnoreCase))
+            return true;                                   // another mod's stars: leave them be
+
+        try
+        {
+            _spriteType ??= AccessTools.TypeByName("KSA.SpriteInstance")
+                         ?? throw new InvalidOperationException("SpriteInstance not found");
+            _spritePosition ??= AccessTools.Field(_spriteType, "Position");
+            _spritePacked ??= AccessTools.Field(_spriteType, "PackedData");
+            _float3Ctor ??= _spritePosition!.FieldType.GetConstructor(
+                                new[] { typeof(float), typeof(float), typeof(float) })
+                            ?? throw new InvalidOperationException("float3(x,y,z) not found");
+            _addInstance ??= AccessTools.Method(starTechnique.GetType(), "AddInstance",
+                                new[] { AccessTools.TypeByName("KSA.IViewport")!, _spriteType })
+                             ?? throw new InvalidOperationException("AddInstance(viewport, instance) not found");
+            _mainViewportProp ??= AccessTools.Property(AccessTools.TypeByName("KSA.Program")!, "MainViewport");
+            object viewport = _mainViewportProp?.GetValue(null)
+                              ?? throw new InvalidOperationException("no main viewport");
+
+            using var stream = File.OpenRead(StarBinary);
+            using var reader = new BinaryReader(stream);
+            int count = reader.ReadInt32();
+            var args = new object[2];
+            args[0] = viewport;
+
+            for (int i = 0; i < count; i++)
+            {
+                float x = reader.ReadSingle(), y = reader.ReadSingle(), z = reader.ReadSingle();
+                byte magnitude = reader.ReadByte();
+                byte r = reader.ReadByte(), g = reader.ReadByte(), b = reader.ReadByte();
+
+                object sprite = Activator.CreateInstance(_spriteType)!;
+                _spritePosition!.SetValue(sprite, _float3Ctor!.Invoke(new object[] { x, y, z }));
+                // Same packing the game uses: colour in the top three bytes, magnitude in the low one.
+                _spritePacked!.SetValue(sprite, ((uint)b << 24) | ((uint)g << 16) | ((uint)r << 8) | magnitude);
+                args[1] = sprite;
+                _addInstance!.Invoke(starTechnique, args);
+            }
+
+            if (!_loadedStars)
+            {
+                ShaderShadow.Log($"loaded {count} stars as 3D positions; parallax is live");
+                _loadedStars = true;
+            }
+            return false;                                  // ours is loaded; skip the game's reader
+        }
+        catch (Exception ex)
+        {
+            ShaderShadow.Log("WARN: could not load the 3D catalogue, falling back to the game's "
+                             + "reader (the sky will be flat and lit wrong): " + ex.Message);
+            return true;
+        }
+    }
 
     private static PropertyInfo? _idProp;
     private static FieldInfo? _starBinariesField;

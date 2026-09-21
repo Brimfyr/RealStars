@@ -38,9 +38,22 @@ HIP = r"C:\Users\gunsh\Documents\Kitten Space Agency\Proxima Centauri\_build\hip
 OUT_NAME = "RealStars.bin"
 
 # ---------------------------------------------------------------- encoding (shader must agree)
-MAG_FAINT = 9.0          # magnitude stored as byte 1; anything fainter is left out
-BYTES_PER_MAG = 24.0     # 0.042 mag per step, and -1.5 lands at byte 253
-MAG_LIMIT = MAG_FAINT    # catalogue cut
+# Stars are stored as 3D POSITIONS in parsecs, not directions, and the byte holds ABSOLUTE
+# magnitude rather than apparent. The shader then works out both the direction and the
+# brightness from where the observer actually is, which is what makes parallax fall out: move,
+# and near stars shift against far ones exactly as they should.
+#
+# Within one system the shift is tiny - 31 arcsec at Pluto, about a quarter of a pixel - but it
+# costs nothing to carry, and it is the difference between a sky painted from Earth and a sky
+# that would still be right if you left.
+MAG_ABS_FAINT = 16.5     # absolute magnitude stored as byte 1
+BYTES_PER_MAG = 10.0     # 0.1 mag per step, spanning -8.9 to +16.5
+MAG_LIMIT = 9.0          # catalogue cut, on APPARENT magnitude as seen from here
+
+# A star with no usable parallax has no known distance. It goes out here, far enough that it
+# cannot parallax noticeably, with an absolute magnitude chosen so that its apparent magnitude
+# from the solar system comes out exactly right anyway.
+UNKNOWN_DISTANCE_PC = 1000.0
 
 OBLIQUITY = math.radians(23.4392911)   # J2000 mean obliquity
 BV_DEFAULT = 0.65                      # solar-ish, for the few stars with no B-V
@@ -89,6 +102,21 @@ def directions(ra_deg, dec_deg):
     return np.stack([x, y * c + z * s, -y * s + z * c], axis=1)
 
 
+def distances(plx_mas, vmag):
+    """Distance in parsecs from parallax, and the absolute magnitude that follows.
+
+    Hipparcos parallaxes are noisy enough that some come out zero or negative, which is a
+    measurement artefact rather than a star behind the observer. Those have no usable distance,
+    so they go to a nominal far shell with an absolute magnitude that reproduces the apparent
+    one from here: correct where we stand, and honest about not knowing how far away it is.
+    """
+    known = plx_mas > 0.5                       # below this the distance error exceeds the value
+    dist = np.where(known, 1000.0 / np.maximum(plx_mas, 1e-6), UNKNOWN_DISTANCE_PC)
+    dist = np.clip(dist, 0.05, 100000.0)
+    absmag = vmag - 5.0 * np.log10(dist / 10.0)
+    return dist, absmag, known
+
+
 # ------------------------------------------------------------------------------- colour
 def cie_xyz(lam):
     """CIE 1931 2-degree colour matching functions, multi-lobe Gaussian fits from Wyman,
@@ -135,29 +163,44 @@ def colours(bv):
 def main():
     vmag, ra, dec, plx, bv = parse()
     dirs = directions(ra, dec)
+    dist, absmag, known = distances(plx, vmag)
     rgb, T = colours(bv)
 
-    scale = np.clip(np.round((MAG_FAINT - vmag) * BYTES_PER_MAG) + 1, 1, 255).astype(np.uint8)
+    positions = dirs * dist[:, None]                       # parsecs, ecliptic Z-up
+    scale = np.clip(np.round((MAG_ABS_FAINT - absmag) * BYTES_PER_MAG) + 1, 1, 255).astype(np.uint8)
+    clipped = int(((MAG_ABS_FAINT - absmag) * BYTES_PER_MAG + 1 > 255).sum()
+                  + ((MAG_ABS_FAINT - absmag) * BYTES_PER_MAG + 1 < 1).sum())
     rgb8 = np.clip(np.round(rgb * 255.0), 0, 255).astype(np.uint8)
 
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, OUT_NAME)
     with open(path, "wb") as f:
         f.write(struct.pack("<i", len(vmag)))
-        rec = np.empty(len(vmag), dtype=np.dtype([("d", "<f4", 3), ("s", "u1"),
+        rec = np.empty(len(vmag), dtype=np.dtype([("p", "<f4", 3), ("s", "u1"),
                                                   ("r", "u1"), ("g", "u1"), ("b", "u1")]))
-        rec["d"] = dirs.astype(np.float32)
+        rec["p"] = positions.astype(np.float32)
         rec["s"] = scale
         rec["r"], rec["g"], rec["b"] = rgb8[:, 0], rgb8[:, 1], rgb8[:, 2]
         f.write(rec.tobytes())
 
     print(f"{OUT_NAME}: {len(vmag)} stars, {os.path.getsize(path)/1e6:.1f} MB")
-    print(f"  magnitudes {vmag.min():.2f} to {vmag.max():.2f} -> bytes {scale.max()} to {scale.min()}")
-    print(f"  brightness range {10 ** (-0.4 * (vmag.min() - vmag.max())):.0f}:1 "
-          f"(the shipped binary manages 70:1)")
+    print(f"  apparent magnitudes {vmag.min():.2f} to {vmag.max():.2f} from here")
+    print(f"  absolute magnitudes {absmag.min():.2f} to {absmag.max():.2f} "
+          f"-> bytes {scale.max()} to {scale.min()} ({clipped} clipped)")
+    print(f"  distances {dist.min():.2f} to {dist.max():.0f} pc; "
+          f"{int(known.sum())} measured, {int((~known).sum())} parked at {UNKNOWN_DISTANCE_PC:.0f} pc")
+    print(f"  nearest: {', '.join(f'{d:.2f} pc' for d in np.sort(dist[known])[:5])}")
     print(f"  temperatures {T.min():.0f} K to {T.max():.0f} K")
-    for name, v in (("brighter than 1", 1.0), ("naked eye (6)", 6.0), (f"all (<= {MAG_FAINT})", MAG_FAINT)):
+    for name, v in (("brighter than 1", 1.0), ("naked eye (6)", 6.0), (f"all (<= {MAG_LIMIT})", MAG_LIMIT)):
         print(f"  {name:>16}: {int((vmag <= v).sum()):6d} stars")
+
+    # What the effect actually looks like: the shift a star of this distance shows between
+    # opposite sides of the observer's travels.
+    print("\n  parallax at the edge of the solar system (Pluto, 39 AU from the Sun):")
+    for label, d in (("Proxima-like (1.3 pc)", 1.3), ("Sirius (2.6 pc)", 2.64),
+                     ("Vega (7.7 pc)", 7.68), ("Polaris (133 pc)", 133.0)):
+        arcsec = 39.0 / d
+        print(f"    {label:<22} {arcsec:7.2f}\"  ({arcsec / 3600 * 1080 / 60:.2f} px at 60 deg, 1080p)")
 
 
 if __name__ == "__main__":

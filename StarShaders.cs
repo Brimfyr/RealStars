@@ -53,10 +53,14 @@ internal static class StarShaders
     /// </remarks>
     private const string Tuning = """
         // ---- Real Stars tuning ----
-        // Our catalogue stores V magnitude linearly in the byte: byte 1 is the faint limit
-        // and each step is 1/24 of a magnitude. make_star_binary.py writes it.
-        const float rsMagFaint = 9.0;
-        const float rsBytesPerMag = 24.0;
+        // Our catalogue stores ABSOLUTE magnitude linearly in the byte: byte 1 is the faint
+        // limit and each step is a tenth of a magnitude. make_star_binary.py writes it, along
+        // with the star's position in parsecs, and the apparent magnitude follows from the
+        // distance to wherever the observer is standing.
+        const float rsMagFaint = 16.5;
+        const float rsBytesPerMag = 10.0;
+        const float rsParsecMetres = 3.0856775814913673e16;
+        const float rsStarShell = 19.5;        // the radius the sky is drawn on, as stock does
         // The magnitude that peaks at 1.0 on screen. Lower makes the whole sky brighter.
         // At 5.0 a naked-eye star of magnitude 6 sits at 0.4, faint but present.
         const float rsMagRef = 5.0;
@@ -86,10 +90,13 @@ internal static class StarShaders
         const float rsMaxGlowPx = 40.0;
         const float rsPi = 3.14159265;
 
-        // Byte back to flux. Pogson: five magnitudes is a factor of a hundred.
-        float rsFlux(float packedScale)
+        // Byte back to flux, through the distance the observer actually is from the star.
+        // Pogson: five magnitudes is a factor of a hundred, and an absolute magnitude is what
+        // a star would show at ten parsecs.
+        float rsFlux(float packedScale, float distancePc)
         {
-            float mag = rsMagFaint - (packedScale * 255.0 - 1.0) / rsBytesPerMag;
+            float absMag = rsMagFaint - (packedScale * 255.0 - 1.0) / rsBytesPerMag;
+            float mag = absMag + 5.0 * log(distancePc / 10.0) * 0.4342944819;
             return pow(10.0, -0.4 * (mag - rsMagRef));
         }
 
@@ -231,12 +238,20 @@ internal static class StarShaders
             vec4 packedData = unpackRGBA(packed);
             outColor = packedData.xyz;
 
-            float flux = rsFlux(packedData.w);
+            // The instance carries the star's true position in parsecs rather than a direction,
+            // so both where it appears and how bright it looks follow from where the observer
+            // is. Move, and near stars slide against far ones: parallax, for free, from the
+            // camera position the engine already publishes.
+            vec3 toStar = position - global.camera.cameraPosition.xyz / rsParsecMetres;
+            float distancePc = max(length(toStar), 1e-6);
+            vec3 starDir = toStar / distancePc;
+
+            float flux = rsFlux(packedData.w, distancePc);
 
             // Twinkle. A star is unresolved, so it gets the full effect; the brightness and
             // the colour move together, which is why the size is computed from the flickered
             // flux and the colour carries only what is left over: the chroma.
-            vec3 scint = rsScintillation(normalize(position), 0.0, global.camera.time);
+            vec3 scint = rsScintillation(starDir, 0.0, global.camera.time);
             float scintMean = (scint.r + scint.g + scint.b) / 3.0;
             flux *= scintMean;
             outColor *= scint / max(scintMean, 1e-4);
@@ -252,7 +267,8 @@ internal static class StarShaders
             outUv = uv[gl_VertexIndex];
             outStar = vec2(flux, glowPx);
 
-            vec4 worldPosition = global.camera.viewProjection * vec4(position, 1);
+            // Drawn on the same shell the game uses, but along the direction just computed.
+            vec4 worldPosition = global.camera.viewProjection * vec4(starDir * rsStarShell, 1);
 
             // Pixels to clip units. The offset is added in clip space, so it is divided by w
             // downstream, and x spans the screen width over 2 NDC units; the aspect factor on
