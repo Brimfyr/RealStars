@@ -16,11 +16,16 @@ namespace RealStars;
 /// and worse from Pluto. The halo's profile, exp(-smoothstep(0,1,x)*8), is also why its edge
 /// reads as a soft gradient rather than a star.
 ///
-/// Both numbers are replaced here. The disc gets its true size, which is allowed to fall below
-/// a pixel and vanish, and the glow gets the radius our own star shader would give a point
-/// source of the Sun's apparent magnitude - the same law, the same cap, so the Sun sits on the
-/// same scale as every star around it. From Jupiter that is about 33 px against a floor of 100,
-/// and from Pluto 21.
+/// Feeding that pass better numbers does not work, which a first attempt proved: sunbloom.frag
+/// scales the flare's own colour by the radius it is given, so a smaller radius does not draw a
+/// smaller sun, it draws a dimmer one, until by Saturn there is nothing left.
+///
+/// So the Sun is not drawn by that pass at all once it is a point. It sits in our catalogue
+/// like any other star, at the origin with the Sun's absolute magnitude, and the star shader
+/// draws it with the same profile as everything else in the sky - brightening correctly as you
+/// approach, shrinking as you leave. This class only manages the handover: the engine's sprite
+/// fades out as the disc falls below a couple of pixels, ours fades in, and the last spare int
+/// of the lighting uniform carries the crossfade to the shader.
 /// </summary>
 internal static class SunGlow
 {
@@ -43,7 +48,7 @@ internal static class SunGlow
         return SolarMagnitudeAt1Au + 5.0 * Math.Log10(au) - 5.0 * Math.Log10(sizeRatio);
     }
 
-    private static FieldInfo? _flareArray, _sunRadiusField, _glowRadiusField;
+    private static FieldInfo? _flareArray, _sunRadiusField, _glowRadiusField, _lightingArray, _lpPad1;
     private static PropertyInfo? _worldSun;
     private static MethodInfo? _sunPositionEcl, _cameraPositionEcl, _diameterPixels;
     private static readonly Dictionary<Type, PropertyInfo?> _shaderSlots = new();
@@ -93,35 +98,59 @@ internal static class SunGlow
             if (_diameterPixels?.Invoke(camera, new object[] { 2.0 * radius, distance }) is not double diameterPx)
                 return;
 
-            double discPx = 0.5 * diameterPx;                       // no floor: let it vanish
-            double glowPx = PlanetPhotometry.GlowRadiusPx(Magnitude(distance, radius));
+            double discPx = 0.5 * diameterPx;
 
-            _flareArray ??= AccessTools.Field(__instance.GetType(), "_sunflareData");
-            if (_flareArray?.GetValue(_flareArray.IsStatic ? null : __instance) is not Array flare) return;
+            // The handover. While the Sun is a resolved disc the engine draws it, and does it
+            // well; once it is a point the star shader does, from the catalogue, with the same
+            // profile as every other star. This crossfades between them over the pixel where
+            // it stops being one and starts being the other.
+            float asPoint = (float)Smoothstep(2.0, 1.0, discPx);
 
             if (!_shaderSlots.TryGetValue(vt, out PropertyInfo? slotProp))
                 _shaderSlots[vt] = slotProp = AccessTools.Property(vt, "ShaderSlot");
-            if (slotProp?.GetValue(viewport) is not int slot || slot < 0 || slot >= flare.Length) return;
+            if (slotProp?.GetValue(viewport) is not int slot || slot < 0) return;
 
-            object box = flare.GetValue(slot)!;
-            _sunRadiusField ??= AccessTools.Field(box.GetType(), "ScreenspaceSunRadius");
-            _glowRadiusField ??= AccessTools.Field(box.GetType(), "ScreenspaceGlowRadius");
-            if (_sunRadiusField == null || _glowRadiusField == null)
+            // Fade the engine's sprite out rather than resizing it. Feeding it a smaller radius
+            // does not make a smaller sun: sunbloom.frag scales the flare's own colour by that
+            // radius, so it dims and disappears instead, which is what a first attempt did.
+            _flareArray ??= AccessTools.Field(__instance.GetType(), "_sunflareData");
+            if (_flareArray?.GetValue(_flareArray.IsStatic ? null : __instance) is Array flare
+                && slot < flare.Length)
             {
-                _consecutiveFailures = GiveUpAfter;
-                ShaderShadow.Log("WARN: sun flare fields not found; the Sun keeps its stock sprite");
-                return;
+                object box = flare.GetValue(slot)!;
+                _sunRadiusField ??= AccessTools.Field(box.GetType(), "ScreenspaceSunRadius");
+                _glowRadiusField ??= AccessTools.Field(box.GetType(), "ScreenspaceGlowRadius");
+                if (_sunRadiusField == null || _glowRadiusField == null)
+                {
+                    _consecutiveFailures = GiveUpAfter;
+                    ShaderShadow.Log("WARN: sun flare fields not found; the Sun keeps its stock sprite");
+                    return;
+                }
+                if (asPoint > 0.0f)
+                {
+                    _sunRadiusField.SetValue(box, (float)_sunRadiusField.GetValue(box)! * (1.0f - asPoint));
+                    _glowRadiusField.SetValue(box, (float)_glowRadiusField.GetValue(box)! * (1.0f - asPoint));
+                    flare.SetValue(box, slot);
+                }
             }
-            _sunRadiusField.SetValue(box, (float)discPx);
-            _glowRadiusField.SetValue(box, (float)glowPx);
-            flare.SetValue(box, slot);
+
+            // And tell the star shader where we are in that handover, through the last spare
+            // int of the lighting uniform.
+            _lightingArray ??= AccessTools.Field(__instance.GetType(), "_lightingData");
+            if (_lightingArray?.GetValue(null) is Array lighting && slot < lighting.Length)
+            {
+                object lbox = lighting.GetValue(slot)!;
+                _lpPad1 ??= AccessTools.Field(lbox.GetType(), "lpPad1");
+                _lpPad1?.SetValue(lbox, BitConverter.SingleToInt32Bits((float)discPx));
+                lighting.SetValue(lbox, slot);
+            }
             _consecutiveFailures = 0;
 
             if (!_logged)
             {
-                ShaderShadow.Log($"sun on the star scale: V {Magnitude(distance, radius):F1} at "
-                                 + $"{distance / Au:F2} AU, disc {discPx:F1} px, glow {glowPx:F0} px "
-                                 + "(stock floors these at 4 and 100)");
+                ShaderShadow.Log($"sun handover live: V {Magnitude(distance, radius):F1} at "
+                                 + $"{distance / Au:F2} AU, disc {discPx:F2} px, "
+                                 + $"{asPoint * 100:F0}% drawn as a star");
                 _logged = true;
             }
         }
@@ -130,5 +159,12 @@ internal static class SunGlow
             if (_consecutiveFailures++ == 0)
                 ShaderShadow.Log("WARN: sun glow hit an error (retrying): " + ex.Message);
         }
+    }
+
+    /// <summary>The shader's smoothstep, so both ends of the handover agree.</summary>
+    public static double Smoothstep(double edge0, double edge1, double x)
+    {
+        double t = Math.Clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
     }
 }

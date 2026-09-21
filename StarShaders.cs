@@ -246,7 +246,24 @@ internal static class StarShaders
             float distancePc = max(length(toStar), 1e-6);
             vec3 starDir = toStar / distancePc;
 
-            float flux = rsFlux(packedData.w, distancePc);
+            // The Sun is the one star sitting at the origin, and while it is still a resolved
+            // disc the engine draws it far better than a point source could. Ours fades in as
+            // that disc falls below a couple of pixels, against the engine's sprite fading out;
+            // the disc's current size arrives in the last spare int of the lighting uniform.
+            float sunFade = 1.0;
+            if (dot(position, position) < 1e-12)
+            {
+                sunFade = smoothstep(2.0, 1.0, intBitsToFloat(global.lighting.lpPad1));
+                if (sunFade <= 0.0)
+                {
+                    outUv = vec2(0.5);
+                    outStar = vec2(0.0, 1.0);
+                    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);    // offscreen: the engine has it
+                    return;
+                }
+            }
+
+            float flux = rsFlux(packedData.w, distancePc) * sunFade;
 
             // Twinkle. A star is unresolved, so it gets the full effect; the brightness and
             // the colour move together, which is why the size is computed from the flickered

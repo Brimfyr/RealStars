@@ -160,13 +160,29 @@ def colours(bv):
 
 
 # -------------------------------------------------------------------------------- write
+SUN_ABS_MAG = 4.83       # the Sun's V absolute magnitude
+SUN_BV = 0.65            # its B-V, which puts it at 5772 K through the same colour pipeline
+
+
 def main():
     vmag, ra, dec, plx, bv = parse()
     dirs = directions(ra, dec)
     dist, absmag, known = distances(plx, vmag)
+
+    # The Sun goes in the catalogue like any other star, at the origin. Once it is too far to
+    # be drawn as a sphere it is a point source like the rest, and putting it here means it is
+    # drawn by the same shader, with the same profile, and brightens correctly as you approach
+    # - rather than by a flare pass whose size is floored and whose colour fades with radius.
+    dirs = np.vstack([dirs, [0.0, 0.0, 0.0]])
+    dist = np.append(dist, 0.0)
+    absmag = np.append(absmag, SUN_ABS_MAG)
+    vmag = np.append(vmag, -26.74)
+    bv = np.append(bv, SUN_BV)
+    known = np.append(known, True)
+
     rgb, T = colours(bv)
 
-    positions = dirs * dist[:, None]                       # parsecs, ecliptic Z-up
+    positions = dirs * dist[:, None]                       # parsecs, ecliptic Z-up; Sun at 0,0,0
     scale = np.clip(np.round((MAG_ABS_FAINT - absmag) * BYTES_PER_MAG) + 1, 1, 255).astype(np.uint8)
     clipped = int(((MAG_ABS_FAINT - absmag) * BYTES_PER_MAG + 1 > 255).sum()
                   + ((MAG_ABS_FAINT - absmag) * BYTES_PER_MAG + 1 < 1).sum())
@@ -183,7 +199,7 @@ def main():
         rec["r"], rec["g"], rec["b"] = rgb8[:, 0], rgb8[:, 1], rgb8[:, 2]
         f.write(rec.tobytes())
 
-    print(f"{OUT_NAME}: {len(vmag)} stars, {os.path.getsize(path)/1e6:.1f} MB")
+    print(f"{OUT_NAME}: {len(vmag)} stars including the Sun, {os.path.getsize(path)/1e6:.1f} MB")
     print(f"  apparent magnitudes {vmag.min():.2f} to {vmag.max():.2f} from here")
     print(f"  absolute magnitudes {absmag.min():.2f} to {absmag.max():.2f} "
           f"-> bytes {scale.max()} to {scale.min()} ({clipped} clipped)")
