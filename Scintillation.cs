@@ -74,8 +74,55 @@ internal static class Scintillation
     private static double _upX, _upY, _upZ;
     private static readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
 
-    /// <summary>Seconds since the mod loaded. The shader has its own clock; they need not agree.</summary>
+    /// <summary>Seconds since the mod loaded, for when the simulation clock cannot be read.</summary>
     public static double Now => _clock.Elapsed.TotalSeconds;
+
+    /// <summary>
+    /// Elapsed SIMULATION seconds, wrapped. Air keeps moving while the universe does, so
+    /// twinkling follows the simulation: it freezes when paused and quickens under time warp.
+    ///
+    /// Wrapped because a float32 carries about seven digits, and a 34 Hz signal needs
+    /// milliseconds: past a few hours of simulation the raw seconds would quantise the flicker
+    /// into steps. The wrap puts a discontinuity in the noise every 1024 seconds, which for a
+    /// random signal is indistinguishable from the noise itself - unlike a smooth animation,
+    /// where a wrap shows as a jump.
+    /// </summary>
+    public const double WrapSeconds = 1024.0;
+    public static double SimSeconds { get; private set; }
+    public static double SimSpeed { get; private set; } = 1.0;
+
+    private static Type? _universeType;
+    private static MethodInfo? _getElapsedTime;
+    private static PropertyInfo? _minutes, _simSpeedProp;
+    private static bool _clockLookedUp;
+
+    /// <summary>Reads the simulation clock, falling back to the wall clock if it cannot.</summary>
+    private static void ReadSimClock()
+    {
+        if (!_clockLookedUp)
+        {
+            _universeType = AccessTools.TypeByName("KSA.Universe");
+            // GetElapsedTime, not GetElapsedSimTime: the latter does not exist in this build.
+            _getElapsedTime = _universeType == null ? null : AccessTools.Method(_universeType, "GetElapsedTime");
+            _simSpeedProp = _universeType == null ? null : AccessTools.Property(_universeType, "SimulationSpeed");
+            _clockLookedUp = true;
+            if (_getElapsedTime == null)
+                ShaderShadow.Log("WARN: no simulation clock; twinkling will follow real time instead");
+        }
+
+        object? t = _getElapsedTime?.Invoke(null, null);
+        if (t != null)
+        {
+            _minutes ??= t.GetType().GetProperty("Minutes");
+            if (_minutes?.GetValue(t) is double minutes)
+            {
+                SimSeconds = (minutes * 60.0) % WrapSeconds;
+                if (_simSpeedProp?.GetValue(null) is double speed) SimSpeed = speed;
+                return;
+            }
+        }
+        SimSeconds = Now % WrapSeconds;
+    }
 
     /// <summary>
     /// The intensity multiplier for a source of this angular diameter in this direction, or 1
@@ -103,8 +150,14 @@ internal static class Scintillation
                      * suppression * VisualScale;
         if (sigma < 1e-3) return 1.0;
 
-        double t = timeSeconds * 34.0 / Math.Sqrt(airmass);
-        return Math.Exp(sigma * Noise(t, seed) - 0.5 * sigma * sigma);
+        // Under time warp the flicker outruns the frame, and a frame that spans many
+        // fluctuations averages them: the same t^(-1/2) that makes a long exposure steadier
+        // than the eye. So warping does not end in per-frame static, it ends in stillness.
+        double frequency = 34.0 / Math.Sqrt(airmass);
+        double perFrame = frequency * Math.Max(SimSpeed, 0.0) / 60.0;      // nominal frame time
+        if (perFrame > 1.0) sigma /= Math.Sqrt(perFrame);
+
+        return Math.Exp(sigma * Noise(timeSeconds * frequency, seed) - 0.5 * sigma * sigma);
     }
 
     // The shader's noise, in C#: three octaves of smooth value noise at about unit variance.
@@ -131,7 +184,7 @@ internal static class Scintillation
     private static PropertyInfo? _meanRadius, _bodyTemplateProp;
     private static FieldInfo? _atmosphereField, _physicalField, _densityField, _scaleHeightField;
     private static readonly Dictionary<Type, MethodInfo?> _positionEgos = new();
-    private static FieldInfo? _pad0, _pad1;
+    private static FieldInfo? _pad0, _pad1, _lpPad0;
     private static bool _logged;
 
     // Per TYPE, because the game has more than one kind of viewport and more than one kind of
@@ -153,6 +206,7 @@ internal static class Scintillation
         if (_consecutiveFailures >= GiveUpAfter) return;
         try
         {
+            ReadSimClock();
             double sigma = 0.0, thetaC = 0.0;
             if (nearbyCelestial != null)
                 (sigma, thetaC) = Measure(nearbyCelestial, viewport);
@@ -174,6 +228,12 @@ internal static class Scintillation
             if (_pad0 == null || _pad1 == null) { _consecutiveFailures = GiveUpAfter; return; }
             _pad0.SetValue(box, (float)sigma);
             _pad1.SetValue(box, (float)thetaC);
+
+            // Simulation seconds for the star shader, as float bits in a spare INT: there is no
+            // spare float left in this uniform, and intBitsToFloat costs nothing.
+            _lpPad0 ??= AccessTools.Field(box.GetType(), "lpPad0");
+            _lpPad0?.SetValue(box, BitConverter.SingleToInt32Bits((float)SimSeconds));
+
             lighting.SetValue(box, slot);
             _consecutiveFailures = 0;
 

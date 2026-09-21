@@ -165,7 +165,20 @@ internal static class StarShaders
             if (sigma < 1e-3) return vec3(1.0);
 
             float seed = rsHash(starDir * 811.7);
-            float t = time * rsScintFreqHz / sqrt(airmass);
+
+            // Simulation seconds, arriving as float bits in a spare int, so the air moves with
+            // the universe: still when paused, quicker under time warp. The `time` argument is
+            // only the fallback for when there is no simulation clock to read.
+            float simTime = intBitsToFloat(global.lighting.lpPad0);
+            float frequency = rsScintFreqHz / sqrt(airmass);
+            float t = (simTime != 0.0 ? simTime : time) * frequency;
+
+            // Warp far enough and the flicker outruns the frame. A frame spanning many
+            // fluctuations averages them, exactly as a long exposure is steadier than the eye,
+            // so time warp settles into stillness rather than dissolving into static.
+            float perFrame = frequency * max(global.camera.simSpeed, 0.0)
+                           * max(global.camera.deltaTime, 1e-5);
+            if (perFrame > 1.0) sigma /= sqrt(perFrame);
 
             // Colour separation, as a fraction of the correlation scale: nil overhead, total
             // by ten degrees up, which is exactly when a bright star starts flashing colours.

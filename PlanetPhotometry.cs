@@ -352,7 +352,7 @@ internal static class PlanetPhotometry
         // The sprite is sized from this magnitude, so brightness and size flicker together.
         double factor = Scintillation.Factor(2.0 * radius / obsDist, gx, gy, gz,
                                              System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(celestial),
-                                             Scintillation.Now);
+                                             Scintillation.SimSeconds);
         if (factor != 1.0) magnitude -= 2.5 * Math.Log10(Math.Max(factor, 1e-6));
 
         return magnitude;
