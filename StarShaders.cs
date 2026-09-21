@@ -49,6 +49,52 @@ internal static class StarShaders
          "    float T = 1400. + 1300.*i; // Temperature range (in Kelvin).",
          "    float T = 5200. + 1200.*i; // Real Stars: the solar photosphere, not a fire."),
 
+        // The marched surface sits at half the mesh radius, and the mesh is 5.5 solar radii,
+        // so the Sun was being drawn 2.75 times its own size. Nothing in the game contradicts
+        // it - the sphere is only ever on screen inside 0.41 AU, where there is nothing to
+        // measure it against - but our sprite is drawn from the real angular size, so at the
+        // handover the disc jumped. It is the star's radius, which is the number the lighting
+        // already carries.
+        ("RayMarching/RayMarchingTest.glsl",
+         "float sunRadius = meshRadius / 2.;",
+         "float sunRadius = global.lighting.sunRadius * scaleDownFactor;  // Real Stars: life size"),
+
+        // And the corona is not one.
+        //
+        // The march adds 1/200 to its density on every step whether or not it hit anything,
+        // and alpha is derived from that density. Fifty-six steps carry it past the point
+        // where alpha saturates, so the star reads as opaque to 2.8 radii and then fades to
+        // the mesh edge at 5.5 - a halo made out of the loop counting itself. The real corona
+        // is about a millionth of the photosphere's surface brightness and is why totality is
+        // the only time anyone sees it.
+        //
+        // A sphere's edge is geometry, so that is where it comes from here: the ray's closest
+        // approach to the centre against the radius, softened by one pixel's worth of it so
+        // the limb does not stair-step. Beyond it there is nothing to draw, and the glare
+        // around the Sun - which is in the eye and the lens, not the sky - is already ours.
+        ("RayMarching/RayMarchingTest.glsl",
+           "    float alpha = 1.;\n"
+         + "\n"
+         + "    // Lower alpha outside of the sphere for a glow\n"
+         + "    if (total_density < .5)\n"
+         + "    {\n"
+         + "        float remappedDensity = remap(total_density, .05, .4);\n"
+         + "        alpha = 6. * falloffFunc(1. - remappedDensity, 1.);\n"
+         + "        alpha = clamp(alpha, 0., 1.);\n"
+         + "    }",
+           "    // Real Stars: the edge of the star, from the star's shape.\n"
+         + "    vec3 toCentre = centerPos - ray_origin;\n"
+         + "    float impact = length(cross(toCentre, ray_direction));\n"
+         + "    float edge = max(fwidth(impact), 1e-6);\n"
+         + "    float alpha = 1. - smoothstep(sunRadius - edge, sunRadius + edge, impact);\n"
+         + "\n"
+         + "    // Limb darkening: a sight line near the edge is slanted, so it reaches optical\n"
+         + "    // depth one higher in the photosphere, where the gas is cooler. The classical\n"
+         + "    // linear law, u = 0.6, which is about right in the visible. Without it a disc\n"
+         + "    // this evenly lit reads as a cut-out rather than a sphere.\n"
+         + "    float mu = sqrt(max(1. - impact * impact / (sunRadius * sunRadius), 0.));\n"
+         + "    total_color *= 1. - 0.6 * (1. - mu);"),
+
         // The Milky Way sits about 50 degrees out of place, and always has. Its rotation is
         // built by GalacticPlane.BuildRotation from EquatorialDirection(ra, dec), which is
         // (cos(dec)cos(ra), sin(dec), cos(dec)sin(ra)) - equatorial, Y up. The world it is then

@@ -35,13 +35,6 @@ internal static class ShaderShadow
     /// </summary>
     public static string[] PatchedShaders { get; private set; } = Array.Empty<string>();
 
-    /// <summary>
-    /// Files we edit a line of rather than replace. They are redirected like the rest, but a
-    /// game update that changes the line leaves the file stock instead of breaking it.
-    /// </summary>
-    private static readonly string[] EditedShaders =
-        StarShaders.Edits.Select(e => e.Name).ToArray();
-
     private static readonly string[] PlanetShaders =
         { "StaticCelestialDistance.vert", "StaticCelestialDistance.frag" };
 
@@ -87,15 +80,15 @@ internal static class ShaderShadow
             Directory.Delete(dstShaders, recursive: true);
         CopyTree(srcShaders, dstShaders);
 
-        int patched = 0;
-        foreach (string name in StarShaders.All.Select(s => s.Name).Where(PatchedShaders.Contains))
-            patched += PatchStarShader(Path.Combine(dstShaders, name)) ? 1 : 0;
-        foreach ((string name, string find, string replace) in StarShaders.Edits)
-            patched += EditShader(Path.Combine(dstShaders, name.Replace('/', Path.DirectorySeparatorChar)),
-                                  find, replace) ? 1 : 0;
+        string[] replacing = StarShaders.All.Select(s => s.Name).Where(PatchedShaders.Contains).ToArray();
+        int patched = replacing.Count(name => PatchStarShader(Path.Combine(dstShaders, name)));
+        int edited = StarShaders.Edits.Count(e =>
+            EditShader(Path.Combine(dstShaders, e.Name.Replace('/', Path.DirectorySeparatorChar)),
+                       e.Find, e.Replace));
 
         ShadersRoot = dstShaders;
-        Log($"shader tree ready ({patched}/{PatchedShaders.Length} star shaders patched) -> {dstShaders}");
+        Log($"shader tree ready ({patched}/{replacing.Length} shaders replaced, "
+            + $"{edited}/{StarShaders.Edits.Length} edits applied) -> {dstShaders}");
     }
 
     /// <summary>
@@ -147,7 +140,10 @@ internal static class ShaderShadow
             return false;
         }
 
-        string text = File.ReadAllText(path);
+        // The game's shaders are CRLF and our anchors are written with \n, because a C# source
+        // file's own line endings are whatever git last left on disk. Normalising here means an
+        // anchor spanning several lines matches the same way on any checkout.
+        string text = File.ReadAllText(path).Replace("\r\n", "\n");
         if (text.Contains(replace, StringComparison.Ordinal)) return true;   // already ours
         if (!text.Contains(find, StringComparison.Ordinal))
         {
