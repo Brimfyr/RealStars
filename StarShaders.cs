@@ -90,6 +90,24 @@ internal static class StarShaders
         const float rsMaxGlowPx = 40.0;
         const float rsPi = 3.14159265;
 
+        // Highlight rolloff. The size law is calibrated across a real sky, whose brightest star
+        // is Sirius at -1.5, and it extrapolates badly far past that: the Sun from Pluto is
+        // -18.8, which the raw law renders as 23 px of saturated white before the halo starts,
+        // and it reads as a giant star rather than a brilliant point. A camera would handle
+        // this with exposure, which this engine does not have, so the excess is compressed
+        // instead - a static rolloff where auto exposure would otherwise sit.
+        //
+        // Nothing in the catalogue is brighter than the knee except the Sun, so the sky itself
+        // is untouched. The slope keeps it responsive: the Sun still grows as you approach and
+        // shrinks as you leave, just over a range a screen can show.
+        const float rsGlareKnee = -6.0;
+        const float rsGlareSlope = 0.35;
+
+        float rsCompressMagnitude(float mag)
+        {
+            return mag < rsGlareKnee ? rsGlareKnee + (mag - rsGlareKnee) * rsGlareSlope : mag;
+        }
+
         // Byte back to flux, through the distance the observer actually is from the star.
         // Pogson: five magnitudes is a factor of a hundred, and an absolute magnitude is what
         // a star would show at ten parsecs.
@@ -97,7 +115,7 @@ internal static class StarShaders
         {
             float absMag = rsMagFaint - (packedScale * 255.0 - 1.0) / rsBytesPerMag;
             float mag = absMag + 5.0 * log(distancePc / 10.0) * 0.4342944819;
-            return pow(10.0, -0.4 * (mag - rsMagRef));
+            return pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef));
         }
 
         // ---- scintillation ----

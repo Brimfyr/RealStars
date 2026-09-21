@@ -189,9 +189,22 @@ internal static class PlanetPhotometry
     /// relation the star vertex shader uses, so a planet and a star of equal magnitude come
     /// out the same size and the same brightness.
     /// </summary>
+    /// <summary>
+    /// Highlight rolloff, mirroring rsCompressMagnitude in the shader. The size law is
+    /// calibrated across a real sky, whose brightest star is Sirius at -1.5; a body seen from
+    /// close range reaches -18 and beyond, where extrapolating it gives a saturated blob rather
+    /// than a brilliant point. A camera would use exposure, which this engine has not got, so
+    /// the excess is compressed here instead. Nothing in a real sky reaches the knee.
+    /// </summary>
+    public const double GlareKnee = -6.0;
+    public const double GlareSlope = 0.35;
+
+    public static double CompressMagnitude(double magnitude)
+        => magnitude < GlareKnee ? GlareKnee + (magnitude - GlareKnee) * GlareSlope : magnitude;
+
     public static double GlowRadiusPx(double magnitude)
     {
-        double flux = Math.Pow(10.0, -0.4 * (magnitude - MagRef));
+        double flux = Math.Pow(10.0, -0.4 * (CompressMagnitude(magnitude) - MagRef));
         double peak = flux * Brightness * (PsfBeta - 1.0) / (Math.PI * PsfCore * PsfCore);
         double glow = PsfCore * Math.Sqrt(
             Math.Max(Math.Pow(peak * DisplayLevels, 1.0 / PsfBeta) - 1.0, 0.0));
