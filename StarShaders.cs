@@ -103,14 +103,6 @@ internal static class StarShaders
         const float rsGlareKnee = -6.0;
         const float rsGlareSlope = 0.35;
 
-        // Where the Sun stops being the engine's sphere and becomes our star, in pixels of its
-        // disc radius. Read these in AU or they mean nothing: the radius is about
-        // 6.5e11 / distance, so 4.5 px to 3.5 is 0.97 AU to 1.24 - just past Earth, where the
-        // engine's hundred-pixel halo starts dominating the look while the sphere is still
-        // being drawn. Hand over any later and that halo gets a stretch to itself.
-        // SunGlow mirrors both.
-        const float rsSunHandoverStartPx = 4.5;
-        const float rsSunHandoverEndPx = 3.5;
 
         float rsCompressMagnitude(float mag)
         {
@@ -273,24 +265,12 @@ internal static class StarShaders
             float distancePc = max(length(toStar), 1e-6);
             vec3 starDir = toStar / distancePc;
 
-            // The Sun is the one star sitting at the origin, and while it is still a resolved
-            // disc the engine draws it far better than a point source could. Ours fades in as
-            // that disc falls below a couple of pixels, against the engine's sprite fading out;
-            // the disc's current size arrives in the last spare int of the lighting uniform.
-            float sunFade = 1.0;
-            if (dot(position, position) < 1e-12)
-            {
-                sunFade = smoothstep(rsSunHandoverStartPx, rsSunHandoverEndPx, intBitsToFloat(global.lighting.lpPad1));
-                if (sunFade <= 0.0)
-                {
-                    outUv = vec2(0.5);
-                    outStar = vec2(0.0, 1.0);
-                    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);    // offscreen: the engine has it
-                    return;
-                }
-            }
-
-            float flux = rsFlux(packedData.w, distancePc) * sunFade;
+            // The Sun is the one star sitting at the origin, and it is drawn here at every
+            // distance. There is no handover: the engine's own sprite is switched off entirely,
+            // because any threshold for swapping between them is a threshold in pixels, and a
+            // pixel is a different distance at every field of view. The sphere still renders
+            // while the Sun is resolved, with this glare around it.
+            float flux = rsFlux(packedData.w, distancePc);
 
             // Twinkle. A star is unresolved, so it gets the full effect; the brightness and
             // the colour move together, which is why the size is computed from the flickered

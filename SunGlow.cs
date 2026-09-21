@@ -38,26 +38,25 @@ internal static class SunGlow
     /// The handover, in pixels of the Sun's disc RADIUS. The engine's sprite holds above the
     /// first, ours holds below the second, and they cross over between.
     ///
-    /// These have to be read in AU to mean anything, because the disc radius is about
-    /// 6.5e11 / distance: a window that sounds tight in pixels can be an astronomical unit
-    /// wide. Two attempts got this wrong in the same way, each time leaving a stretch where the
-    /// sphere had shrunk away and ours had not arrived, so the engine's hundred-pixel halo was
-    /// the only thing drawing the Sun - the soft gradient blob.
+    /// There is no handover any more, and that is the point.
     ///
-    ///     2 px -> 1 px      2.2 to 4.3 AU    Ceres to nearly Jupiter
-    ///     3 px -> 2.5 px    1.45 to 1.74 AU  just past Mars
-    ///     4.5 px -> 3.5 px  0.97 to 1.24 AU  just past Earth, where the halo takes over
+    /// Three attempts tried to find a distance to swap at, each one further in than the last,
+    /// and each one still showed the gradient somewhere:
     ///
-    /// The last is the one that matters: the halo starts dominating the look a little after
-    /// Earth, while the sphere is still being drawn, so ours has to be in by then. The two
-    /// overlapping for a fraction of an AU is fine - a small disc with glare around it is what
-    /// the Sun looks like there.
+    ///     2 px -> 1 px      2.2 to 4.3 AU
+    ///     3 px -> 2.5 px    1.45 to 1.74 AU
+    ///     4.5 px -> 3.5 px  0.97 to 1.24 AU
     ///
-    /// The shader mirrors both numbers; the checks convert them back into AU and fail if they
-    /// drift, because in pixels this mistake is invisible.
+    /// The flaw is not the number, it is the unit. A threshold in PIXELS converts to a distance
+    /// only at one field of view: zoom in and the same disc covers more pixels, so the swap
+    /// happens further out - which is why each larger threshold still arrived too late for
+    /// someone watching against the orbit lines. Chasing it was never going to converge.
+    ///
+    /// So the engine's disc and halo are switched off at every distance, and ours draws the
+    /// Sun's glare at every distance. The sphere still renders while it is resolved, which is
+    /// the part that looked right all along; what goes is the flare pass's contribution, which
+    /// is the part that never did.
     /// </summary>
-    public const double HandoverStartPx = 4.5;     // engine alone above this
-    public const double HandoverEndPx = 3.5;       // ours alone below it
 
     /// <summary>
     /// What a star of this radius would look like from this distance, in magnitudes.
@@ -125,19 +124,14 @@ internal static class SunGlow
 
             double discPx = 0.5 * diameterPx;
 
-            // The handover. While the Sun is a resolved disc the engine draws it, and does it
-            // well; once it is a point the star shader does, from the catalogue, with the same
-            // profile as every other star. This crossfades between them over the pixel where
-            // it stops being one and starts being the other.
-            float asPoint = (float)Smoothstep(HandoverStartPx, HandoverEndPx, discPx);
-
             if (!_shaderSlots.TryGetValue(vt, out PropertyInfo? slotProp))
                 _shaderSlots[vt] = slotProp = AccessTools.Property(vt, "ShaderSlot");
             if (slotProp?.GetValue(viewport) is not int slot || slot < 0) return;
 
-            // Fade the engine's sprite out rather than resizing it. Feeding it a smaller radius
-            // does not make a smaller sun: sunbloom.frag scales the flare's own colour by that
-            // radius, so it dims and disappears instead, which is what a first attempt did.
+            // Off, at every distance. Not resized - sunbloom.frag scales the flare's colour by
+            // the radius it is handed, so a smaller radius draws a dimmer sun rather than a
+            // smaller one - and not faded on a threshold either, because a threshold in pixels
+            // is a different distance at every field of view.
             _flareArray ??= AccessTools.Field(__instance.GetType(), "_sunflareData");
             if (_flareArray?.GetValue(_flareArray.IsStatic ? null : __instance) is Array flare
                 && slot < flare.Length)
@@ -151,31 +145,17 @@ internal static class SunGlow
                     ShaderShadow.Log("WARN: sun flare fields not found; the Sun keeps its stock sprite");
                     return;
                 }
-                if (asPoint > 0.0f)
-                {
-                    _sunRadiusField.SetValue(box, (float)_sunRadiusField.GetValue(box)! * (1.0f - asPoint));
-                    _glowRadiusField.SetValue(box, (float)_glowRadiusField.GetValue(box)! * (1.0f - asPoint));
-                    flare.SetValue(box, slot);
-                }
-            }
-
-            // And tell the star shader where we are in that handover, through the last spare
-            // int of the lighting uniform.
-            _lightingArray ??= AccessTools.Field(__instance.GetType(), "_lightingData");
-            if (_lightingArray?.GetValue(null) is Array lighting && slot < lighting.Length)
-            {
-                object lbox = lighting.GetValue(slot)!;
-                _lpPad1 ??= AccessTools.Field(lbox.GetType(), "lpPad1");
-                _lpPad1?.SetValue(lbox, BitConverter.SingleToInt32Bits((float)discPx));
-                lighting.SetValue(lbox, slot);
+                _sunRadiusField.SetValue(box, 0.0f);
+                _glowRadiusField.SetValue(box, 0.0f);
+                flare.SetValue(box, slot);
             }
             _consecutiveFailures = 0;
 
             if (!_logged)
             {
-                ShaderShadow.Log($"sun handover live: V {Magnitude(distance, radius):F1} at "
-                                 + $"{distance / Au:F2} AU, disc {discPx:F2} px, "
-                                 + $"{asPoint * 100:F0}% drawn as a star");
+                ShaderShadow.Log($"sun drawn as a star at every distance: V {Magnitude(distance, radius):F1} "
+                                 + $"at {distance / Au:F2} AU (its disc would be {discPx:F1} px; "
+                                 + "the engine's own sprite is off)");
                 _logged = true;
             }
         }
