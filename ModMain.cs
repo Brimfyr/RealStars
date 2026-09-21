@@ -168,14 +168,25 @@ internal static class Patches
         string? shadowRoot = ShaderShadow.ShadersRoot;
         if (shadowRoot == null) return;
 
-        string name = Path.GetFileName(filePath);
-        if (!ShaderShadow.PatchedShaders.Contains(name, StringComparer.OrdinalIgnoreCase)) return;
-
+        // Matched on the path BELOW the shader root, not on the file name: a shader can live in
+        // a subdirectory, and a bare name would also claim a same-named file elsewhere.
         string full = Normalize(filePath);
-        if (full.IndexOf(StockMarker, StringComparison.OrdinalIgnoreCase) < 0
-            && full.IndexOf(ShadowMarker, StringComparison.OrdinalIgnoreCase) < 0) return;
+        int start = -1;
+        int marker = full.IndexOf(StockMarker, StringComparison.OrdinalIgnoreCase);
+        if (marker >= 0) start = marker + StockMarker.Length;
+        else
+        {
+            marker = full.IndexOf(ShadowMarker, StringComparison.OrdinalIgnoreCase);
+            if (marker >= 0) start = marker + ShadowMarker.Length;
+        }
+        if (start < 0) return;
 
-        string candidate = Path.Combine(shadowRoot, name);
+        string relative = full[start..];
+        string? name = ShaderShadow.PatchedShaders.FirstOrDefault(p =>
+            p.Replace('/', '\\').Equals(relative, StringComparison.OrdinalIgnoreCase));
+        if (name == null) return;
+
+        string candidate = Path.Combine(shadowRoot, name.Replace('/', '\\'));
         if (!File.Exists(candidate)) return;
         if (string.Equals(full, candidate, StringComparison.OrdinalIgnoreCase)) return;
 

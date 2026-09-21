@@ -26,6 +26,30 @@ internal static class StarShaders
         ("StaticCelestialDistance.frag", PlanetFragFingerprint, PlanetFrag),
     };
 
+    /// <summary>
+    /// Shaders we change a line of rather than replace. The Sun's surface is a raymarch of
+    /// several hundred lines that does its job; only its palette is wrong, and taking custody
+    /// of the whole file to fix two numbers would be taking on its maintenance for nothing.
+    /// </summary>
+    /// <summary>
+    /// Files served from our tree unmodified. shaderc resolves an #include relative to the file
+    /// that asked for it, so a shader we do not touch still has to come from our copy for our
+    /// edit to its includes to be the one it sees.
+    /// </summary>
+    public static readonly string[] Redirected = { "Sun/Sun.frag" };
+
+    public static readonly (string Name, string Find, string Replace)[] Edits =
+    {
+        // The sphere and its corona are coloured by a blackbody ramp over 1400-2700 K, which is
+        // a flame: embers through to orange. The Sun's photosphere is 5772 K and reads as
+        // near-white, its granulation varying a couple of hundred kelvin either side, so the
+        // range moves onto the star it is meant to be. Everything else about the palette - the
+        // wavelengths, the exposure curve - is left as it was.
+        ("RayMarching/RayMarchingTest.glsl",
+         "    float T = 1400. + 1300.*i; // Temperature range (in Kelvin).",
+         "    float T = 5200. + 1200.*i; // Real Stars: the solar photosphere, not a fire."),
+    };
+
     // ---------------------------------------------------------------------------------
     // Why any of this changes:
     //
@@ -274,10 +298,20 @@ internal static class StarShaders
             // while the Sun is resolved, with this glare around it.
             float flux = rsFlux(packedData.w, distancePc);
 
+            // The Sun's own angular size, in pixels: it is a resolved disc, and both the
+            // profile below and the scintillation above need to know that.
+            float discPx = dot(position, position) < 1e-12
+                         ? max(intBitsToFloat(global.lighting.lpPad1), 0.0) : 0.0;
+
             // Twinkle. A star is unresolved, so it gets the full effect; the brightness and
             // the colour move together, which is why the size is computed from the flickered
             // flux and the colour carries only what is left over: the chroma.
-            vec3 scint = rsScintillation(starDir, 0.0, global.camera.time);
+            // The size suppression needs the source's angular radius, and the Sun has a real
+            // one: about a thousand arcseconds from Earth against the 1.5 arcsec scale of the
+            // turbulence. Passing zero here is why the Sun shimmered through the atmosphere
+            // like a point source, which it is the furthest thing from.
+            float pxPerRad = 0.5 * float(global.camera.screenHeight) * global.camera.projection[1][1];
+            vec3 scint = rsScintillation(starDir, discPx / max(pxPerRad, 1.0), global.camera.time);
             float scintMean = (scint.r + scint.g + scint.b) / 3.0;
             flux *= scintMean;
             outColor *= scint / max(scintMean, 1e-4);
@@ -290,13 +324,10 @@ internal static class StarShaders
                 rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels, 1.0 / rsPsfBeta) - 1.0, 0.0)),
                 rsMinGlowPx, rsMaxGlowPx);
 
-            // A resolved source is its disc convolved with the profile, so the Sun carries its
-            // own disc radius and the halo starts at the limb rather than at the centre. As the
-            // disc falls below a pixel this becomes an ordinary point source on its own, with
-            // no threshold to cross - which is what stops the Sun snapping to a smaller size
-            // when the engine stops drawing its sphere.
-            float discPx = dot(position, position) < 1e-12
-                         ? max(intBitsToFloat(global.lighting.lpPad1), 0.0) : 0.0;
+            // A resolved source is its disc convolved with the profile, so the halo starts at
+            // the limb rather than at the centre. As the disc falls below a pixel this becomes
+            // an ordinary point source on its own, with no threshold to cross - which is what
+            // stops the Sun snapping to a smaller size when the sphere stops being drawn.
             float spritePx = discPx + glowPx;
 
             outUv = uv[gl_VertexIndex];

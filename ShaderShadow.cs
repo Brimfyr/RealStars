@@ -35,6 +35,13 @@ internal static class ShaderShadow
     /// </summary>
     public static string[] PatchedShaders { get; private set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Files we edit a line of rather than replace. They are redirected like the rest, but a
+    /// game update that changes the line leaves the file stock instead of breaking it.
+    /// </summary>
+    private static readonly string[] EditedShaders =
+        StarShaders.Edits.Select(e => e.Name).ToArray();
+
     private static readonly string[] PlanetShaders =
         { "StaticCelestialDistance.vert", "StaticCelestialDistance.frag" };
 
@@ -62,6 +69,7 @@ internal static class ShaderShadow
     {
         PatchedShaders = StarShaders.All.Select(s => s.Name)
             .Where(n => patchPlanets || !PlanetShaders.Contains(n))
+            .Concat(StarShaders.Redirected)
             .ToArray();
         try
         {
@@ -80,8 +88,11 @@ internal static class ShaderShadow
         CopyTree(srcShaders, dstShaders);
 
         int patched = 0;
-        foreach (string name in PatchedShaders)
+        foreach (string name in StarShaders.All.Select(s => s.Name).Where(PatchedShaders.Contains))
             patched += PatchStarShader(Path.Combine(dstShaders, name)) ? 1 : 0;
+        foreach ((string name, string find, string replace) in StarShaders.Edits)
+            patched += EditShader(Path.Combine(dstShaders, name.Replace('/', Path.DirectorySeparatorChar)),
+                                  find, replace) ? 1 : 0;
 
         ShadersRoot = dstShaders;
         Log($"shader tree ready ({patched}/{PatchedShaders.Length} star shaders patched) -> {dstShaders}");
@@ -120,6 +131,31 @@ internal static class ShaderShadow
         }
 
         File.WriteAllText(path, replacement, new UTF8Encoding(false));
+        return true;
+    }
+
+    /// <summary>
+    /// Replaces one line in a copied shader. The anchor is the whole line, so a game update
+    /// that touches it at all leaves the file stock and says so, rather than half-patching it.
+    /// </summary>
+    private static bool EditShader(string path, string find, string replace)
+    {
+        string name = Path.GetFileName(path);
+        if (!File.Exists(path))
+        {
+            Log($"WARN: {name} not found in the copied tree; leaving it stock");
+            return false;
+        }
+
+        string text = File.ReadAllText(path);
+        if (text.Contains(replace, StringComparison.Ordinal)) return true;   // already ours
+        if (!text.Contains(find, StringComparison.Ordinal))
+        {
+            Log($"WARN: {name} no longer contains the line this mod edits; leaving it stock");
+            return false;
+        }
+
+        File.WriteAllText(path, text.Replace(find, replace), new UTF8Encoding(false));
         return true;
     }
 
