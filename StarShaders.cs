@@ -36,7 +36,7 @@ internal static class StarShaders
     /// that asked for it, so a shader we do not touch still has to come from our copy for our
     /// edit to its includes to be the one it sees.
     /// </summary>
-    public static readonly string[] Redirected = { "Sun/Sun.frag" };
+    public static readonly string[] Redirected = { "Sun/Sun.frag", "MilkyWay.frag" };
 
     public static readonly (string Name, string Find, string Replace)[] Edits =
     {
@@ -48,6 +48,29 @@ internal static class StarShaders
         ("RayMarching/RayMarchingTest.glsl",
          "    float T = 1400. + 1300.*i; // Temperature range (in Kelvin).",
          "    float T = 5200. + 1200.*i; // Real Stars: the solar photosphere, not a fire."),
+
+        // The Milky Way sits about 50 degrees out of place, and always has. Its rotation is
+        // built by GalacticPlane.BuildRotation from EquatorialDirection(ra, dec), which is
+        // (cos(dec)cos(ra), sin(dec), cos(dec)sin(ra)) - equatorial, Y up. The world it is then
+        // applied to is ecliptic, Z up: the planets orbit in its XY plane and the shipped star
+        // binary is in it too. Measured against the real sky the galactic centre lands 55.3
+        // degrees from where it belongs and the north galactic pole 49.1.
+        //
+        // Nothing here changes the matrix. The view direction is converted out of the world's
+        // frame and into the one the matrix was built for, first: equatorial by the obliquity,
+        // then Y-up by swapping the last two components. That is a conversion of the input
+        // frame, so it holds whichever way round the engine's matrix convention runs. With it,
+        // the centre lands 0.07 degrees from Sagittarius A*, which is the width of the IAU's
+        // own definition.
+        ("MilkyWay.frag",
+         "    sampleDir   = (global.camera.galacticPlane * vec4(sampleDir, 0.0)).xyz;",
+         "    // Real Stars: into the equatorial Y-up frame the galactic rotation was built in.\n"
+         + "    const float rsCosObliquity = 0.91748206;   // 23.4392911 degrees\n"
+         + "    const float rsSinObliquity = 0.39777716;\n"
+         + "    sampleDir   = vec3(sampleDir.x,\n"
+         + "                       rsSinObliquity * sampleDir.y + rsCosObliquity * sampleDir.z,\n"
+         + "                       rsCosObliquity * sampleDir.y - rsSinObliquity * sampleDir.z);\n"
+         + "    sampleDir   = (global.camera.galacticPlane * vec4(sampleDir, 0.0)).xyz;"),
     };
 
     // ---------------------------------------------------------------------------------
