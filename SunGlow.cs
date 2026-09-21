@@ -35,6 +35,21 @@ internal static class SunGlow
     private const double Au = 1.495978707e11;
 
     /// <summary>
+    /// The handover, in pixels of the Sun's disc RADIUS. The engine's sprite holds above the
+    /// first, ours holds below the second, and they cross over between.
+    ///
+    /// This has to sit where the sphere stops being drawn, around 1.45 AU, or there is a gap
+    /// in between where the engine's hundred-pixel halo is the only thing left and the Sun
+    /// reads as a soft gradient blob. A first attempt handed over at 2 px down to 1, which
+    /// sounds tight until you convert it: the disc radius is about 6.5e11 / distance, so that
+    /// window is 2.2 AU to 4.3 AU - Ceres to nearly Jupiter, all of it gradient.
+    ///
+    /// The shader mirrors both numbers; the checks fail if they drift apart.
+    /// </summary>
+    public const double HandoverStartPx = 3.0;     // engine alone above this
+    public const double HandoverEndPx = 2.5;       // ours alone below it
+
+    /// <summary>
     /// What a star of this radius would look like from this distance, in magnitudes.
     ///
     /// Scaled from the Sun by surface area, which assumes solar surface brightness: exact for
@@ -104,7 +119,7 @@ internal static class SunGlow
             // well; once it is a point the star shader does, from the catalogue, with the same
             // profile as every other star. This crossfades between them over the pixel where
             // it stops being one and starts being the other.
-            float asPoint = (float)Smoothstep(2.0, 1.0, discPx);
+            float asPoint = (float)Smoothstep(HandoverStartPx, HandoverEndPx, discPx);
 
             if (!_shaderSlots.TryGetValue(vt, out PropertyInfo? slotProp))
                 _shaderSlots[vt] = slotProp = AccessTools.Property(vt, "ShaderSlot");

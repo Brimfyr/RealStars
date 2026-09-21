@@ -103,6 +103,13 @@ internal static class StarShaders
         const float rsGlareKnee = -6.0;
         const float rsGlareSlope = 0.35;
 
+        // Where the Sun stops being the engine's sphere and becomes our star, in pixels of its
+        // disc radius. It has to meet the sphere: the disc radius is about 6.5e11 / distance,
+        // so handing over at 2 px down to 1 spans 2.2 AU to 4.3 AU, and across all of it the
+        // engine's hundred-pixel halo is the only thing drawing the Sun. SunGlow mirrors these.
+        const float rsSunHandoverStartPx = 3.0;
+        const float rsSunHandoverEndPx = 2.5;
+
         float rsCompressMagnitude(float mag)
         {
             return mag < rsGlareKnee ? rsGlareKnee + (mag - rsGlareKnee) * rsGlareSlope : mag;
@@ -271,7 +278,7 @@ internal static class StarShaders
             float sunFade = 1.0;
             if (dot(position, position) < 1e-12)
             {
-                sunFade = smoothstep(2.0, 1.0, intBitsToFloat(global.lighting.lpPad1));
+                sunFade = smoothstep(rsSunHandoverStartPx, rsSunHandoverEndPx, intBitsToFloat(global.lighting.lpPad1));
                 if (sunFade <= 0.0)
                 {
                     outUv = vec2(0.5);
