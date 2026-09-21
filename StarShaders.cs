@@ -232,7 +232,9 @@ internal static class StarShaders
         // Output
         layout (location = 0) out vec3 outColor;
         layout (location = 1) out vec2 outUv;
-        layout (location = 2) out vec2 outStar;   // x = flux, 1.0 at the catalogue floor; y = glow radius in px
+        // x = flux, y = sprite radius in px, z = the source's own disc radius in px (0 for a
+        // point source, which is everything except the Sun seen from close by)
+        layout (location = 2) out vec3 outStar;
 
         {{Tuning}}
         const float rsMinGlowPx = 1.5;            // a faint star must still cover a pixel
@@ -288,8 +290,17 @@ internal static class StarShaders
                 rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels, 1.0 / rsPsfBeta) - 1.0, 0.0)),
                 rsMinGlowPx, rsMaxGlowPx);
 
+            // A resolved source is its disc convolved with the profile, so the Sun carries its
+            // own disc radius and the halo starts at the limb rather than at the centre. As the
+            // disc falls below a pixel this becomes an ordinary point source on its own, with
+            // no threshold to cross - which is what stops the Sun snapping to a smaller size
+            // when the engine stops drawing its sphere.
+            float discPx = dot(position, position) < 1e-12
+                         ? max(intBitsToFloat(global.lighting.lpPad1), 0.0) : 0.0;
+            float spritePx = discPx + glowPx;
+
             outUv = uv[gl_VertexIndex];
-            outStar = vec2(flux, glowPx);
+            outStar = vec3(flux, spritePx, discPx);
 
             // Drawn on the same shell the game uses, but along the direction just computed.
             vec4 worldPosition = global.camera.viewProjection * vec4(starDir * rsStarShell, 1);
@@ -298,7 +309,7 @@ internal static class StarShaders
             // downstream, and x spans the screen width over 2 NDC units; the aspect factor on
             // y then keeps the quad square on screen, as stock does.
             float pxToClip = 2.0 * worldPosition.w / max(global.camera.screenWidth, 1.0);
-            vec2 vertPosition = (outUv - vec2(0.5)) * (2.0 * glowPx * pxToClip);
+            vec2 vertPosition = (outUv - vec2(0.5)) * (2.0 * spritePx * pxToClip);
 
             vec4 screenOffset = vec4(vertPosition.x, vertPosition.y * global.camera.aspectRatio, 1.0f, 0);
             gl_Position = worldPosition + screenOffset;
@@ -313,7 +324,7 @@ internal static class StarShaders
 
         layout (location = 0) in vec3 inColor;
         layout (location = 1) in vec2 inUv;
-        layout (location = 2) in vec2 inStar;     // x = flux, y = glow radius in px
+        layout (location = 2) in vec3 inStar;     // x = flux, y = sprite radius px, z = disc radius px
 
         layout (location = 0) out vec4 outColor;
 
@@ -326,7 +337,11 @@ internal static class StarShaders
         void main(void)
         {
             float r = length(inUv.xy - vec2(0.5f)) * 2.0f;   // 0 at the centre, 1 at the quad's edge
-            float x = (r * inStar.y) / rsPsfCore;            // pixels from the centre, in core widths
+            // Pixels from the centre, then from the LIMB: a resolved source is its disc
+            // convolved with the profile, so the halo begins at the edge of the disc. For a
+            // point source the disc radius is zero and this is the ordinary profile.
+            float px = r * inStar.y;
+            float x = max(px - inStar.z, 0.0) / rsPsfCore;
 
             // Moffat, normalised to unit energy:
             //     I(r) = (beta-1)/(pi a^2) * (1 + (r/a)^2)^-beta

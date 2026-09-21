@@ -149,6 +149,19 @@ internal static class SunGlow
                 _glowRadiusField.SetValue(box, 0.0f);
                 flare.SetValue(box, slot);
             }
+
+            // The star shader needs the Sun's true disc size, so that while it is resolved the
+            // halo starts at the limb rather than at the centre. Without it the sprite's core
+            // is sized by magnitude alone, which is a different number from the disc, and the
+            // Sun snaps to it the moment the engine stops drawing the sphere.
+            _lightingArray ??= AccessTools.Field(__instance.GetType(), "_lightingData");
+            if (_lightingArray?.GetValue(null) is Array lighting && slot < lighting.Length)
+            {
+                object lbox = lighting.GetValue(slot)!;
+                _lpPad1 ??= AccessTools.Field(lbox.GetType(), "lpPad1");
+                _lpPad1?.SetValue(lbox, BitConverter.SingleToInt32Bits((float)discPx));
+                lighting.SetValue(lbox, slot);
+            }
             _consecutiveFailures = 0;
 
             if (!_logged)
