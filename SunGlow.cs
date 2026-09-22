@@ -89,6 +89,11 @@ internal static class SunGlow
     public static void UpdateShaderDataPostfix(object __instance, object viewport)
     {
         if (_consecutiveFailures >= GiveUpAfter) return;
+
+        // First, and outside the try, because it is wanted on every frame and none of the
+        // sun-sprite work below is a reason to skip it.
+        Starburst.Publish(__instance, viewport);
+
         try
         {
             _worldSun ??= AccessTools.Property(AccessTools.TypeByName("KSA.Universe")!, "WorldSun");
