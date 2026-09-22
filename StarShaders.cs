@@ -32,11 +32,12 @@ internal static class StarShaders
     /// of the whole file to fix two numbers would be taking on its maintenance for nothing.
     /// </summary>
     /// <summary>
-    /// Files served from our tree unmodified. shaderc resolves an #include relative to the file
-    /// that asked for it, so a shader we do not touch still has to come from our copy for our
-    /// edit to its includes to be the one it sees.
+    /// Files served from our tree rather than the game's. Anything we edit belongs here, unless
+    /// it reaches the compiler as an #include of something that is already on the list: shaderc
+    /// resolves an #include relative to the file that asked for it, so Sun.frag is here to carry
+    /// the raymarch we edit, not because we change Sun.frag itself.
     /// </summary>
-    public static readonly string[] Redirected = { "Sun/Sun.frag", "MilkyWay.frag" };
+    public static readonly string[] Redirected = { "Sun/Sun.frag", "MilkyWay.frag", "PostProcess/sunbloom.frag" };
 
     public static readonly (string Name, string Find, string Replace)[] Edits =
     {
@@ -94,6 +95,23 @@ internal static class StarShaders
          + "    // this evenly lit reads as a cut-out rather than a sphere.\n"
          + "    float mu = sqrt(max(1. - impact * impact / (sunRadius * sunRadius), 0.));\n"
          + "    total_color *= 1. - 0.6 * (1. - mu);"),
+
+        // The last thing drawing a Sun that is not ours.
+        //
+        // The bloom pass fills a disc of TWO solar radii solid white whenever the pixel's ray
+        // hits it - insideSun() raytraces it - with no relation to the screenspace radius the
+        // rest of the pass is sized by, and so no relation to anything we zeroed. That is the
+        // white disc sitting inside the sphere. It also steps twice on the way in: at 0.78 of
+        // showSurfDist the disc widens by a quarter and its brightness falls to a third, which
+        // is the jump around Mercury that survived the sprite going away.
+        //
+        // The Sun's disc and its glare are our sprite's now, at the real angular size and the
+        // real magnitude, so the pass has nothing left to contribute. Only the sun's own term
+        // goes: the occlusion output below is untouched, so the lens flare still knows whether
+        // the Sun is in view, and the spokes and ghosts in sunbloom_blur.comp are left alone.
+        ("PostProcess/sunbloom.frag",
+         "    float sunPower = innerSun * innerSunScalar + outerSun * sunData.outerSunColorScalar;",
+         "    float sunPower = 0.;  // Real Stars: the Sun is drawn as the star it is"),
 
         // The Milky Way sits about 50 degrees out of place, and always has. Its rotation is
         // built by GalacticPlane.BuildRotation from EquatorialDirection(ra, dec), which is
