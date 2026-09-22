@@ -530,6 +530,10 @@ internal static class StarShaders
         const float rsBurstMag = -3.0;
         const float rsRayPxPerMag = 12.0;   // of reach, for each magnitude past that line
         const float rsMaxRayPx = 140.0;     // the Sun alone comes near this
+        // How sharply a burst leaves when its source leaves the frame. Over its own reach is
+        // far too slow: a hundred and forty pixels of fade is a hundred and forty pixels of
+        // rays still streaming in from a source that went several frames ago.
+        const float rsBurstEdgePx = 10.0;
 
         // Blur and colour, which are one thing rather than two. An eye does not bring every
         // wavelength to a focus in the same plane - across the visible range the difference is
@@ -797,17 +801,19 @@ internal static class StarShaders
 
             // Off the edge of the frame is a kind of occlusion as well: light that never
             // entered has no business leaving scatter behind. The halo is small enough to see
-            // itself out, which is why the glare already behaves; a burst reaching a hundred
-            // and forty pixels does not, and rays arrive from a source that is not there. It
-            // fades over its own reach, so it has gone by the time it could no longer touch
-            // the frame anyway. The magnitude of w keeps anything behind the camera outside.
+            // itself out, which is why the glare already behaves. The magnitude of w keeps
+            // anything behind the camera outside rather than mirrored into view.
             vec2 ndc = worldPosition.xy / max(abs(worldPosition.w), 1e-6);
             vec2 pastEdge = 0.5 * vec2(global.camera.screenWidth, global.camera.screenHeight)
                           * (abs(ndc) - vec2(1.0));
-            burstPx *= 1.0 - smoothstep(0.0, max(burstPx, 1.0),
-                                        max(max(pastEdge.x, pastEdge.y), 0.0));
 
+            // The quad keeps the size the UNFADED burst asked for, so that the halo - which is
+            // taken to nothing over the last fraction of the quad - renders the same whatever
+            // the rays are doing. Tying the two together made the glare change as the burst
+            // went, which is not a thing the glare should know about.
             float spritePx = discPx + max(glowPx, burstPx);
+            burstPx *= 1.0 - smoothstep(-rsBurstEdgePx, rsBurstEdgePx,
+                                        max(pastEdge.x, pastEdge.y));
 
             outUv = uv[gl_VertexIndex];
             outStar = vec4(flux, spritePx, discPx, burstPx);
@@ -959,14 +965,14 @@ internal static class StarShaders
             vec4 clipPosition = global.camera.viewProjection * vec4(instanceData.positionEgo, 1);
 
             // Off the edge of the frame is occlusion too - see the star shader, which does the
-            // same thing for the same reason.
+            // same thing for the same reason, and sizes its quad the same way.
             vec2 ndc = clipPosition.xy / max(abs(clipPosition.w), 1e-6f);
             vec2 pastEdge = 0.5f * vec2(global.camera.screenWidth, global.camera.screenHeight)
                           * (abs(ndc) - vec2(1.0f));
-            burstPx *= 1.0f - smoothstep(0.0f, max(burstPx, 1.0f),
-                                         max(max(pastEdge.x, pastEdge.y), 0.0f));
 
             float spritePx = max(glowPx, burstPx);
+            burstPx *= 1.0f - smoothstep(-rsBurstEdgePx, rsBurstEdgePx,
+                                         max(pastEdge.x, pastEdge.y));
 
             // The offset is added after the perspective divide, so a pixel is 2/screen in
             // normalised device coordinates, and the quad spans from -radius to +radius across

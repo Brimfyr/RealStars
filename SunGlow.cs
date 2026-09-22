@@ -72,7 +72,7 @@ internal static class SunGlow
         return SolarMagnitudeAt1Au + 5.0 * Math.Log10(au) - 5.0 * Math.Log10(sizeRatio);
     }
 
-    private static FieldInfo? _flareArray, _sunRadiusField, _glowRadiusField, _lightingArray, _lpPad1;
+    private static FieldInfo? _flareArray, _sunDotField, _lightingArray, _lpPad1;
     private static PropertyInfo? _worldSun;
     private static MethodInfo? _sunPositionEcl, _cameraPositionEcl, _diameterPixels;
     private static readonly Dictionary<Type, PropertyInfo?> _shaderSlots = new();
@@ -133,25 +133,31 @@ internal static class SunGlow
                 _shaderSlots[vt] = slotProp = AccessTools.Property(vt, "ShaderSlot");
             if (slotProp?.GetValue(viewport) is not int slot || slot < 0) return;
 
-            // Off, at every distance. Not resized - sunbloom.frag scales the flare's colour by
-            // the radius it is handed, so a smaller radius draws a dimmer sun rather than a
-            // smaller one - and not faded on a threshold either, because a threshold in pixels
-            // is a different distance at every field of view.
+            // The stock sun flare, off at every distance, at the one place that gates all of
+            // it: SunDot multiplies the bloom pass's disc, its spokes and its lens ghosts
+            // alike, and nothing else reads it.
+            //
+            // The radii are left exactly as the engine set them. Zeroing them used to be how
+            // the sprite was switched off, and it worked, but sunbloom_blur.comp DIVIDES by
+            // the glow radius to give its spokes a radial falloff - so a zero turned them into
+            // a full-screen pattern that did not attenuate with distance from the Sun at all,
+            // and survived the Sun leaving the frame. It also pinned the lens ghosts' distance
+            // scale at its ceiling, six times the size they were meant to be, which is what
+            // swelled as the Sun approached an edge. The disc and the glow they were zeroed
+            // for are gone a better way now: sunPower is zero in sunbloom.frag.
             _flareArray ??= AccessTools.Field(__instance.GetType(), "_sunflareData");
             if (_flareArray?.GetValue(_flareArray.IsStatic ? null : __instance) is Array flare
                 && slot < flare.Length)
             {
                 object box = flare.GetValue(slot)!;
-                _sunRadiusField ??= AccessTools.Field(box.GetType(), "ScreenspaceSunRadius");
-                _glowRadiusField ??= AccessTools.Field(box.GetType(), "ScreenspaceGlowRadius");
-                if (_sunRadiusField == null || _glowRadiusField == null)
+                _sunDotField ??= AccessTools.Field(box.GetType(), "SunDot");
+                if (_sunDotField == null)
                 {
                     _consecutiveFailures = GiveUpAfter;
-                    ShaderShadow.Log("WARN: sun flare fields not found; the Sun keeps its stock sprite");
+                    ShaderShadow.Log("WARN: SunDot not found; the Sun keeps its stock flare");
                     return;
                 }
-                _sunRadiusField.SetValue(box, 0.0f);
-                _glowRadiusField.SetValue(box, 0.0f);
+                _sunDotField.SetValue(box, 0.0f);
                 flare.SetValue(box, slot);
             }
 
@@ -173,7 +179,7 @@ internal static class SunGlow
             {
                 ShaderShadow.Log($"sun drawn as a star at every distance: V {Magnitude(distance, radius):F1} "
                                  + $"at {distance / Au:F2} AU (its disc would be {discPx:F1} px; "
-                                 + "the engine's own sprite is off)");
+                                 + "the engine's own flare is off)");
                 _logged = true;
             }
         }
