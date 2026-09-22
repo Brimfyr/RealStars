@@ -513,12 +513,23 @@ internal static class StarShaders
             vec4( 0.98895, -0.14822, 0.429, 0.601),
             vec4( 0.99708, -0.07642, 0.967, 0.366)
         );
-        const float rsRayCorePx = 2.0;      // the core of the sizing rule below
         const float rsRayWidthPx = 0.42;    // across a ray: about a pixel of visible width
-        const float rsRayReachShare = 0.006;// of the peak, for LENGTH only - see below
-        const float rsRayLevel = 0.13;      // and how bright a ray is drawn, which is not
-        const float rsRayTaper = 1.6;       // the same question. Base to tip, as taper^this.
-        const float rsMaxRayPx = 70.0;      // the Sun and Venus both ask for far more
+        const float rsRayLevel = 0.13;      // how bright a ray is drawn, in display units
+        const float rsRayTaper = 1.6;       // and how it falls from base to tip, as taper^this
+        //
+        // Where rays begin at all. The scatter that makes them is always there, but it is a
+        // thin thing spread over the retina and it only lifts out of the noise for a source
+        // that is overwhelmingly brighter than everything around it. That is why the Sun
+        // bursts and Sirius does not, and why a sky of stars should read as points: an eye
+        // adapted to the night sees Vega as a point, and the same eye in daylight cannot see
+        // Vega at all. Below magnitude -3 nothing in the sky qualifies except Venus, which is
+        // about where a burst stops being reported by anyone looking up.
+        //
+        // The engine has no adaptation, so this stands in for the part of it that matters
+        // here: a fixed line, past which rays grow with how far past it a source is.
+        const float rsBurstMag = -3.0;
+        const float rsRayPxPerMag = 12.0;   // of reach, for each magnitude past that line
+        const float rsMaxRayPx = 140.0;     // the Sun alone comes near this
 
         // Blur and colour, which are one thing rather than two. An eye does not bring every
         // wavelength to a focus in the same plane - across the visible range the difference is
@@ -540,14 +551,17 @@ internal static class StarShaders
             return max(intBitsToFloat(global.camera.pad0), 0.0);
         }
 
-        // How far the burst reaches, by the rule the halo is already sized by: where the
-        // brightest ray crosses one display level. Zero means no burst, and no quad grown to
-        // hold one, which is what all but a few hundred of the catalogue get.
+        // How far the burst reaches: nothing at all until a source is past rsBurstMag, then
+        // so many pixels for every magnitude beyond it. Zero means no burst, and no quad grown
+        // to hold one, which is what the whole catalogue gets bar the Sun.
         float rsBurstReachPx(float peak)
         {
-            float rayPeak = peak * rsRayReachShare * rsBurstStrength();
-            return clamp(rsRayCorePx * sqrt(max(rayPeak * rsDisplayLevels - 1.0, 0.0)),
-                         0.0, rsMaxRayPx);
+            // The peak a source on the line reaches, worked out from the same profile as
+            // everything else so the two cannot drift apart.
+            float onTheLine = pow(10.0, -0.4 * (rsBurstMag - rsMagRef))
+                            * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
+            float mags = 2.5 * log(max(peak, 1e-9) / onTheLine) * 0.4342944819;
+            return clamp(mags * rsRayPxPerMag * rsBurstStrength(), 0.0, rsMaxRayPx);
         }
 
         // The burst at an offset from the source, in screen pixels.
@@ -703,8 +717,15 @@ internal static class StarShaders
             // one: about a thousand arcseconds from Earth against the 1.5 arcsec scale of the
             // turbulence. Passing zero here is why the Sun shimmered through the atmosphere
             // like a point source, which it is the furthest thing from.
-            float pxPerRad = 0.5 * float(global.camera.screenHeight) * global.camera.projection[1][1];
-            vec3 scint = rsScintillation(starDir, discPx / max(pxPerRad, 1.0), global.camera.time);
+            //
+            // It comes straight out of the lighting data rather than back out of a pixel
+            // count, because a pixel count needs projection[1][1], and that is NEGATIVE here -
+            // the engine's own shaders take abs() of it and call the result oneOverTanHalfFov.
+            // Dividing by it unguarded left the Sun with an angular radius of several radians.
+            float sunAngularRad = discPx > 0.0
+                ? global.lighting.sunRadius / max(length(global.lighting.sunPosition.xyz), 1.0)
+                : 0.0;
+            vec3 scint = rsScintillation(starDir, sunAngularRad, global.camera.time);
             float scintMean = (scint.r + scint.g + scint.b) / 3.0;
             flux *= scintMean;
             outColor *= scint / max(scintMean, 1e-4);
@@ -712,8 +733,7 @@ internal static class StarShaders
             // And what is in front of it. Fading the flux rather than the drawn colour means
             // the halo and the rays shrink with it, which is what less light does, and an
             // occulted star leaves nothing sticking out past the limb that hid it.
-            flux *= rsVisibility(starDir, distancePc * rsParsecMetres,
-                                 discPx / max(pxPerRad, 1.0));
+            flux *= rsVisibility(starDir, distancePc * rsParsecMetres, sunAngularRad);
 
             // Moffat beta = 2 at unit energy peaks at 1/(pi*core^2), so the profile crosses
             // one display level at this radius. Sizing the quad to it means the sprite is
@@ -876,8 +896,6 @@ internal static class StarShaders
             // are at. Taking it off the peak and turning that back into a radius keeps the one
             // channel telling the truth, so the fragment shader needs to know nothing about it.
             float dist = length(instanceData.positionEgo);
-            float pxPerRad = 0.5f * float(global.camera.screenHeight)
-                           * abs(global.camera.projection[1][1]);
             peak *= rsVisibility(instanceData.positionEgo / max(dist, 1.0f), dist, 0.0f);
             glowPx = rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels, 1.0f / rsPsfBeta) - 1.0f, 0.0f));
 
