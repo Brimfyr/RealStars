@@ -634,35 +634,26 @@ internal static class StarShaders
         // looking at clear sky, and it survived. This fades the source by what the SOURCE is
         // looking through, the same way the geometry did.
         //
-        // It is the shape of the thing rather than its optics: nothing here knows an extinction
-        // coefficient, and the star pipeline cannot reach the atmosphere LUTs. What it leans on
-        // is that slant optical depth falls exponentially with the height a ray grazes at, so
-        // the change from opaque to clear happens over a few scale heights and lands at a
-        // similar FRACTION of the visual height the engine does publish. Working it through:
-        //
-        //   Earth, Rayleigh at 550 nm. Vertical depth 0.13, limb enhancement sqrt(2*pi*R/H)
-        //   = 69, so a grazing ray at the surface sees 8.9. That falls to 3 by 9 km and to a
-        //   tenth by 38, against a visual height near 100: 0.09 and 0.38 of it.
-        //   Titan, haze. Vertical depth near 4 and a 50 km scale height give 72 at the
-        //   surface, down to 3 by 159 km and a tenth by 329, against 600: 0.26 and 0.55.
-        //
-        // One pair of numbers cannot be both, so they sit between, nearer the thick end where
-        // the effect is worth having. These are the knobs if a particular sky wants otherwise.
-        const float rsAirOpaque = 0.20;     // of the visual height: below this, nothing through
-        const float rsAirClear = 0.50;      // and above this, everything
-
+        // The two altitudes come from LimbAir.cs, in metres above the surface, because they
+        // cannot be got at from here: they depend on the density at the surface and the scale
+        // height, and what the shaders are handed is the atmosphere's VISUAL height, which is
+        // sized to look right and says nothing about how far up it is opaque. Taking fractions
+        // of that was the first attempt; Titan came out right and Earth, Mars and Venus came
+        // out far too early, which is the giveaway. Mars has a visual atmosphere and almost no
+        // extinction at all.
         float rsAirVisibility(vec3 dirToSource, float sourceDistM)
         {
-            float top = global.lighting.atmosphereHeight;
-            if (top <= 0.0) return 1.0;     // no air, or none the shaders were told about
+            float opaque = intBitsToFloat(global.celestial.pad0);
+            float clear = intBitsToFloat(global.celestial.pad1);
+            if (!(clear > opaque)) return 1.0;      // no air, or none worth the name
             vec3 centre = global.lighting.planetPosition.xyz;
             float d = length(centre);
             if (d < 1.0 || d >= sourceDistM * 0.9999) return 1.0;
             float cosSep = dot(centre / d, dirToSource);
-            if (cosSep <= 0.0) return 1.0;  // the body is behind us
+            if (cosSep <= 0.0) return 1.0;          // the body is behind us
             // How high the ray grazes: its distance from the centre, less the surface.
             float graze = d * sqrt(max(1.0 - cosSep * cosSep, 0.0)) - global.lighting.planetRadius;
-            return smoothstep(rsAirOpaque * top, rsAirClear * top, graze);
+            return smoothstep(opaque, clear, graze);
         }
 
         float rsVisibility(vec3 dirToSource, float sourceDistM, float softRad)
@@ -682,10 +673,12 @@ internal static class StarShaders
                 // A source is covered over its OWN angular size: a star is a point and goes
                 // out at once, which is what a real occultation does, while the Sun takes the
                 // width of its disc and an eclipse dims as the disc is eaten. The floor is
-                // only there to keep it off a single frame, and is a hundredth of the
-                // occulter's limb - nothing at all for a distant planet, a soft band at a
-                // horizon, where a soft band is what belongs.
-                float soft = max(softRad, limb * 0.01);
+                // only there to keep it off a single frame - at a fiftieth of what it was,
+                // because a hundredth of a horizon's limb is three quarters of a degree, half
+                // again the Sun's own diameter, and the Sun was going out before it had begun
+                // to set. A five hundredth is a tenth of a degree, still tens of seconds to
+                // cross, and small enough that anything resolved sets on its own size.
+                float soft = max(softRad, limb * 0.002);
                 vis = min(vis, smoothstep(limb - soft, limb + soft, sep));
                 if (vis <= 0.0) return 0.0;
             }

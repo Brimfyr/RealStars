@@ -117,7 +117,13 @@ internal static class Starburst
 
         _atmosphericBody ??= AccessTools.TypeByName("KSA.AtmosphericBody");
         if (_atmosphericBody == null) return;
-        if (nearby != null && _atmosphericBody.IsInstanceOfType(nearby)) return;   // real air
+
+        // How high this body's air stops letting starlight through, for the limb test. It goes
+        // out every frame, and zero when there is no air, so nothing stale is left behind.
+        bool hasAir = nearby != null && _atmosphericBody.IsInstanceOfType(nearby);
+        LimbAir.Publish(program, hasAir ? nearby! : null!, slot, viewport);
+
+        if (hasAir) return;                                     // real air; leave its height be
 
         _lightingArray ??= AccessTools.Field(program.GetType(), "_lightingData");
         if (_lightingArray?.GetValue(null) is not Array lighting || slot >= lighting.Length) return;

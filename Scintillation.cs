@@ -273,6 +273,14 @@ internal static class Scintillation
         return (sigma, thetaC);
     }
 
+    /// <summary>
+    /// The observer's air, for anyone who needs it: density at the surface in kg/m3, and
+    /// scale height in metres. <see cref="LimbAir"/> works the limb's opacity out of the
+    /// same two numbers.
+    /// </summary>
+    public static (double Density, double ScaleHeight) MeasureAir(object celestial, object viewport)
+        => Measure(celestial, viewport);
+
     /// <summary>The observer's air, from the body they are near.</summary>
     private static (double, double) Measure(object celestial, object viewport)
     {
