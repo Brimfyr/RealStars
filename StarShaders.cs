@@ -520,6 +520,18 @@ internal static class StarShaders
         const float rsRayTaper = 1.6;       // the same question. Base to tip, as taper^this.
         const float rsMaxRayPx = 70.0;      // the Sun and Venus both ask for far more
 
+        // Blur and colour, which are one thing rather than two. An eye does not bring every
+        // wavelength to a focus in the same plane - across the visible range the difference is
+        // about two dioptres, blue in front of the retina and red behind it - so a ray is at
+        // its sharpest in the middle of the spectrum and spread either side of it, most at the
+        // blue end. Each channel gets its own width across the ray and its own reach along it,
+        // which leaves a ray white down its middle, cool along its soft edges and warm at its
+        // tip, and leaves the burst as a whole the colour of whatever threw it. Aberration
+        // moves light about; it does not repaint the source.
+        const vec3 rsRayChroma = vec3(0.88, 1.0, 1.18);  // relative defocus, R G B
+        const float rsRayBlur = 0.45;       // weight of the soft skirt beside the sharp core
+        const float rsRayBlurScale = 3.2;   // and how much wider that skirt is
+
         // The game's own lens flare setting, carried into these shaders - which cannot see the
         // flare buffer - through the camera UBO's spare word. Starburst.cs writes it: the
         // toggle and the intensity together, and zero when either of them says no.
@@ -547,25 +559,78 @@ internal static class StarShaders
         // looking at it, a ray is faint whoever it belongs to: Venus and Sirius differ in the
         // reach of their rays, not in how hard they glare. So the level is in display units
         // rather than a fraction of a peak that would saturate them all alike.
-        float rsBurst(vec2 offsetPx, float reachPx)
+        vec3 rsBurst(vec2 offsetPx, float reachPx)
         {
-            if (reachPx <= 0.0) return 0.0;
-            float total = 0.0;
+            if (reachPx <= 0.0) return vec3(0.0);
+            vec3 width = rsRayWidthPx * rsRayChroma;
+            vec3 skirt = width * rsRayBlurScale;
+            float cutoff = 4.0 * skirt.b;
+            vec3 total = vec3(0.0);
             for (int k = 0; k < rsRayCount; k++)
             {
                 vec4 ray = rsRays[k];
-                // Across the ray first: at four sigma there is nothing left to add, and with
-                // this many rays all but one or two are dismissed on two multiplies.
+                // Across the ray first: at four sigma of the widest channel there is nothing
+                // left to add, and with this many rays nearly all of them are dismissed on two
+                // multiplies and a compare.
                 float across = offsetPx.y * ray.x - offsetPx.x * ray.y;
-                if (abs(across) > 4.0 * rsRayWidthPx) continue;
+                if (abs(across) > cutoff) continue;
                 float along = dot(offsetPx, ray.xy);
                 if (along <= 0.0) continue;             // one sided, so lengths can differ
-                float taper = 1.0 - along / max(reachPx * ray.z, 1e-3);
-                if (taper <= 0.0) continue;
-                total += ray.w * pow(taper, rsRayTaper)
-                       * exp(-0.5 * across * across / (rsRayWidthPx * rsRayWidthPx));
+                vec3 taper = max(1.0 - along / max(reachPx * ray.z / rsRayChroma, vec3(1e-3)),
+                                 vec3(0.0));
+                float a2 = across * across;
+                // Matched at the axis rather than in total, so the channels differ in
+                // shape and not in how much of each there is: white down the middle.
+                vec3 profile = (exp(-0.5 * a2 / (width * width))
+                                + rsRayBlur * exp(-0.5 * a2 / (skirt * skirt)))
+                             / (1.0 + rsRayBlur);
+                total += ray.w * pow(taper, vec3(rsRayTaper)) * profile;
             }
             return total * rsRayLevel * rsBurstStrength();
+        }
+
+        // ---- what is in the way ----
+        // A sprite is a billboard standing where its source is, so the depth test hides only
+        // the part of it a body actually covers. A star behind a planet's limb keeps whatever
+        // rays reach past that limb, radiating out of nothing, and the halo does the same. The
+        // engine's own bloom answers this by measuring how much of the sun is visible and
+        // fading everything by it; this is that, without a depth buffer, which these shaders
+        // are not handed.
+        //
+        // The bodies in the celestial block are the ones that can do the hiding: the nearby
+        // parent and its children, positions and radii in metres about the camera, which is
+        // exactly how the engine's own shadow code reads them. It covers the case that
+        // matters - a source going behind the world you are at - and on the surface it IS the
+        // horizon, since the camera sits at the body's own radius, the limb is ninety degrees,
+        // and everything below it is gone.
+        //
+        // The fade runs over softRad, so a point source goes in a pixel and a resolved one
+        // over its own disc: an eclipse then dims exactly as the disc is covered.
+        float rsVisibility(vec3 dirToSource, float sourceDistM, float softRad)
+        {
+            float vis = 1.0;
+            for (int i = 0; i < global.celestial.bodyCount; i++)
+            {
+                vec4 body = global.celestial.bodies[i];
+                float d = length(body.xyz);
+                // Nothing at the camera, and nothing at or past the source - which is what
+                // keeps a body from hiding itself, since it is in this list too.
+                if (d < 1.0 || d >= sourceDistM * 0.9999) continue;
+                float cosSep = dot(body.xyz / d, dirToSource);
+                if (cosSep <= 0.0) continue;            // behind us
+                float sep = acos(clamp(cosSep, -1.0, 1.0));
+                float limb = asin(clamp(body.w / d, 0.0, 1.0));
+                // A source is covered over its OWN angular size: a star is a point and goes
+                // out at once, which is what a real occultation does, while the Sun takes the
+                // width of its disc and an eclipse dims as the disc is eaten. The floor is
+                // only there to keep it off a single frame, and is a hundredth of the
+                // occulter's limb - nothing at all for a distant planet, a soft band at a
+                // horizon, where a soft band is what belongs.
+                float soft = max(softRad, limb * 0.01);
+                vis = min(vis, smoothstep(limb - soft, limb + soft, sep));
+                if (vis <= 0.0) return 0.0;
+            }
+            return vis;
         }
         """;
 
@@ -644,6 +709,12 @@ internal static class StarShaders
             flux *= scintMean;
             outColor *= scint / max(scintMean, 1e-4);
 
+            // And what is in front of it. Fading the flux rather than the drawn colour means
+            // the halo and the rays shrink with it, which is what less light does, and an
+            // occulted star leaves nothing sticking out past the limb that hid it.
+            flux *= rsVisibility(starDir, distancePc * rsParsecMetres,
+                                 discPx / max(pxPerRad, 1.0));
+
             // Moffat beta = 2 at unit energy peaks at 1/(pi*core^2), so the profile crosses
             // one display level at this radius. Sizing the quad to it means the sprite is
             // exactly the star's visible extent and never a disc with a hard edge.
@@ -712,18 +783,22 @@ internal static class StarShaders
 
             float intensity = inStar.x * rsBrightness * psf;
 
-            // The observer's rays, on top of the halo rather than instead of it. How far
-            // they reach was settled in the vertex shader, where the quad was sized for them.
-            intensity += rsBurst((inUv - vec2(0.5f)) * 2.0f * inStar.y, inStar.w);
-
             // Take the last of it to zero before the quad's edge, so the sprite never shows.
-            intensity *= smoothstep(1.0f, 0.85f, r);
+            float edgeFade = smoothstep(1.0f, 0.85f, r);
+            intensity *= edgeFade;
 
             // The Sun gives brightness back as it fills the frame - see SunExposureKnee.
             // inStar.z is the disc radius, and is zero for everything else in the catalogue,
             // so every other star keeps the plain ceiling.
             float cap = inStar.z > 0.0 ? {{SunLevelGlsl}} : rsMaxOutput;
-            outColor = vec4(inColor.rgb * min(intensity, cap), 1.0f);
+
+            // The rays go beside the core rather than into it: they are faint by construction,
+            // and running them through a ceiling meant for a saturating point would only take
+            // the colour back out of them. How far they reach was settled in the vertex
+            // shader, where the quad was sized to hold them.
+            vec3 burst = rsBurst((inUv - vec2(0.5f)) * 2.0f * inStar.y, inStar.w) * edgeFade;
+
+            outColor = vec4(inColor.rgb * (vec3(min(intensity, cap)) + burst), 1.0f);
         }
         """;
 
@@ -797,6 +872,15 @@ internal static class StarShaders
             float edge = 1.0f + (glowPx / rsPsfCore) * (glowPx / rsPsfCore);
             float peak = pow(edge, rsPsfBeta) / rsDisplayLevels;
 
+            // What is in front of it: a moon behind its planet, a planet behind the world you
+            // are at. Taking it off the peak and turning that back into a radius keeps the one
+            // channel telling the truth, so the fragment shader needs to know nothing about it.
+            float dist = length(instanceData.positionEgo);
+            float pxPerRad = 0.5f * float(global.camera.screenHeight)
+                           * abs(global.camera.projection[1][1]);
+            peak *= rsVisibility(instanceData.positionEgo / max(dist, 1.0f), dist, 0.0f);
+            glowPx = rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels, 1.0f / rsPsfBeta) - 1.0f, 0.0f));
+
             // Venus asks for a burst, Neptune does not. The quad takes whichever reaches further.
             float burstPx = rsBurstReachPx(peak);
             float spritePx = max(glowPx, burstPx);
@@ -818,7 +902,7 @@ internal static class StarShaders
             gl_Position.z = max(0.0, gl_Position.z); // Prevent early frag culling
             outColor = instanceData.color;
 
-            outScalePixel = instanceData.scalePixel;
+            outScalePixel = glowPx;
             outSpritePx = spritePx;
             outBurstPx = burstPx;
             outUV = uv[gl_VertexIndex];
@@ -859,17 +943,23 @@ internal static class StarShaders
             float peak = pow(edge, rsPsfBeta) / rsDisplayLevels;
 
             float intensity = peak / pow(1.0f + x * x, rsPsfBeta);
-            // The same rays, from the same eye, as the stars get.
-            intensity += rsBurst((inUV - vec2(0.5f)) * 2.0f * quadPx, inBurstPx);
-            intensity *= smoothstep(1.0f, 0.85f, r);
+            float edgeFade = smoothstep(1.0f, 0.85f, r);
+            intensity *= edgeFade;
+            // The same rays, from the same eye, as the stars get - and beside the core for the
+            // same reason.
+            vec3 burst = rsBurst((inUV - vec2(0.5f)) * 2.0f * quadPx, inBurstPx) * edgeFade;
 
             // The engine has already scaled this colour by its own phase term. Ours is in the
             // magnitude, so take the hue and leave the brightness alone.
             float hue = max(max(inColor.r, inColor.g), inColor.b);
             vec3 tint = hue > 1e-4f ? inColor / hue : vec3(1.0f);
 
+            // The core is clamped, the rays are not - they are already faint, and a ceiling
+            // meant for a saturating point would only take the colour back out of them. Alpha
+            // follows the brightest channel, so a ray blends in rather than being dropped.
             float brightness = min(intensity, rsMaxOutput);
-            outColor = vec4(tint * brightness, min(brightness, 1.0f));
+            vec3 rgb = tint * (vec3(brightness) + burst);
+            outColor = vec4(rgb, min(max(max(rgb.r, rgb.g), rgb.b), 1.0f));
 
             if (brightness >= 1.0f)
             {
