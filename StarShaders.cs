@@ -620,6 +620,47 @@ internal static class StarShaders
         //
         // The fade runs over softRad, so a point source goes in a pixel and a resolved one
         // over its own disc: an eclipse then dims exactly as the disc is covered.
+        // How much of a source the air above a body takes, which is a different question
+        // from what its rock takes and answers a good deal higher up. At Titan the haze is
+        // already opaque tens of kilometres above ground that cannot be seen at all, so a
+        // source behind the haze is gone whatever the surface is doing.
+        //
+        // The engine's composite extincts the pixels it draws, which is why a core and its
+        // halo fade correctly through a limb - but a ray reaching past that limb is a pixel
+        // looking at clear sky, and it survived. This fades the source by what the SOURCE is
+        // looking through, the same way the geometry did.
+        //
+        // It is the shape of the thing rather than its optics: nothing here knows an extinction
+        // coefficient, and the star pipeline cannot reach the atmosphere LUTs. What it leans on
+        // is that slant optical depth falls exponentially with the height a ray grazes at, so
+        // the change from opaque to clear happens over a few scale heights and lands at a
+        // similar FRACTION of the visual height the engine does publish. Working it through:
+        //
+        //   Earth, Rayleigh at 550 nm. Vertical depth 0.13, limb enhancement sqrt(2*pi*R/H)
+        //   = 69, so a grazing ray at the surface sees 8.9. That falls to 3 by 9 km and to a
+        //   tenth by 38, against a visual height near 100: 0.09 and 0.38 of it.
+        //   Titan, haze. Vertical depth near 4 and a 50 km scale height give 72 at the
+        //   surface, down to 3 by 159 km and a tenth by 329, against 600: 0.26 and 0.55.
+        //
+        // One pair of numbers cannot be both, so they sit between, nearer the thick end where
+        // the effect is worth having. These are the knobs if a particular sky wants otherwise.
+        const float rsAirOpaque = 0.20;     // of the visual height: below this, nothing through
+        const float rsAirClear = 0.50;      // and above this, everything
+
+        float rsAirVisibility(vec3 dirToSource, float sourceDistM)
+        {
+            float top = global.lighting.atmosphereHeight;
+            if (top <= 0.0) return 1.0;     // no air, or none the shaders were told about
+            vec3 centre = global.lighting.planetPosition.xyz;
+            float d = length(centre);
+            if (d < 1.0 || d >= sourceDistM * 0.9999) return 1.0;
+            float cosSep = dot(centre / d, dirToSource);
+            if (cosSep <= 0.0) return 1.0;  // the body is behind us
+            // How high the ray grazes: its distance from the centre, less the surface.
+            float graze = d * sqrt(max(1.0 - cosSep * cosSep, 0.0)) - global.lighting.planetRadius;
+            return smoothstep(rsAirOpaque * top, rsAirClear * top, graze);
+        }
+
         float rsVisibility(vec3 dirToSource, float sourceDistM, float softRad)
         {
             float vis = 1.0;
@@ -644,7 +685,7 @@ internal static class StarShaders
                 vis = min(vis, smoothstep(limb - soft, limb + soft, sep));
                 if (vis <= 0.0) return 0.0;
             }
-            return vis;
+            return min(vis, rsAirVisibility(dirToSource, sourceDistM));
         }
         """;
 
@@ -750,13 +791,26 @@ internal static class StarShaders
             // The burst is sized by the same rule and reaches further than the halo for
             // anything bright enough to have one, so the quad takes whichever wins.
             float burstPx = rsBurstReachPx(peak);
+
+            // Drawn on the same shell the game uses, but along the direction just computed.
+            vec4 worldPosition = global.camera.viewProjection * vec4(starDir * rsStarShell, 1);
+
+            // Off the edge of the frame is a kind of occlusion as well: light that never
+            // entered has no business leaving scatter behind. The halo is small enough to see
+            // itself out, which is why the glare already behaves; a burst reaching a hundred
+            // and forty pixels does not, and rays arrive from a source that is not there. It
+            // fades over its own reach, so it has gone by the time it could no longer touch
+            // the frame anyway. The magnitude of w keeps anything behind the camera outside.
+            vec2 ndc = worldPosition.xy / max(abs(worldPosition.w), 1e-6);
+            vec2 pastEdge = 0.5 * vec2(global.camera.screenWidth, global.camera.screenHeight)
+                          * (abs(ndc) - vec2(1.0));
+            burstPx *= 1.0 - smoothstep(0.0, max(burstPx, 1.0),
+                                        max(max(pastEdge.x, pastEdge.y), 0.0));
+
             float spritePx = discPx + max(glowPx, burstPx);
 
             outUv = uv[gl_VertexIndex];
             outStar = vec4(flux, spritePx, discPx, burstPx);
-
-            // Drawn on the same shell the game uses, but along the direction just computed.
-            vec4 worldPosition = global.camera.viewProjection * vec4(starDir * rsStarShell, 1);
 
             // Pixels to clip units. The offset is added in clip space, so it is divided by w
             // downstream, and x spans the screen width over 2 NDC units; the aspect factor on
@@ -901,6 +955,17 @@ internal static class StarShaders
 
             // Venus asks for a burst, Neptune does not. The quad takes whichever reaches further.
             float burstPx = rsBurstReachPx(peak);
+
+            vec4 clipPosition = global.camera.viewProjection * vec4(instanceData.positionEgo, 1);
+
+            // Off the edge of the frame is occlusion too - see the star shader, which does the
+            // same thing for the same reason.
+            vec2 ndc = clipPosition.xy / max(abs(clipPosition.w), 1e-6f);
+            vec2 pastEdge = 0.5f * vec2(global.camera.screenWidth, global.camera.screenHeight)
+                          * (abs(ndc) - vec2(1.0f));
+            burstPx *= 1.0f - smoothstep(0.0f, max(burstPx, 1.0f),
+                                         max(max(pastEdge.x, pastEdge.y), 0.0f));
+
             float spritePx = max(glowPx, burstPx);
 
             // The offset is added after the perspective divide, so a pixel is 2/screen in
@@ -909,8 +974,7 @@ internal static class StarShaders
             vertPosition.x *= 4.0f * spritePx / global.camera.screenWidth;
             vertPosition.y *= 4.0f * spritePx / global.camera.screenHeight;
 
-            vec4 worldPosition = global.camera.viewProjection * vec4(instanceData.positionEgo, 1);
-            worldPosition /= worldPosition.w;
+            vec4 worldPosition = clipPosition / clipPosition.w;
             vec4 screenOffset = vec4(vertPosition.x, vertPosition.y, 0.0f, 0);
 
             vec4 depthCalculation = global.camera.viewProjection * vec4(instanceData.positionEgo, 1);

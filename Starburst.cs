@@ -23,8 +23,12 @@ internal static class Starburst
     private const float MaxStrength = 4.0f;
 
     private static FieldInfo? _flareArray, _showFlare, _intensity, _cameraArray, _pad;
+    private static FieldInfo? _lightingArray, _atmosphereHeight;
+    private static Type? _atmosphericBody;
     private static readonly Dictionary<Type, PropertyInfo?> _shaderSlots = new();
-    private static bool _resolved, _usable, _logged;
+    private static readonly Dictionary<Type, MethodInfo?> _cameras = new();
+    private static readonly Dictionary<Type, PropertyInfo?> _nearby = new();
+    private static bool _resolved, _usable, _logged, _airLogged;
 
     /// <summary>
     /// Called from the same postfix on Program.UpdateShaderData that switches the engine's sun
@@ -68,6 +72,8 @@ internal static class Starburst
             _pad!.SetValue(cbox, BitConverter.SingleToInt32Bits(strength));
             cameras.SetValue(cbox, slot);
 
+            ClearStaleAtmosphere(program, viewport, slot);
+
             if (!_logged)
             {
                 ShaderShadow.Log($"starbursts {(on ? $"on at x{strength:0.##}" : "off")} "
@@ -80,6 +86,54 @@ internal static class Starburst
             _resolved = true;
             _usable = false;
             ShaderShadow.Log("WARN: the lens flare setting could not be read; no starbursts: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Makes global.lighting.atmosphereHeight mean what it says.
+    ///
+    /// UpdatePlanetShaderData writes the planet block ONLY when the nearby celestial is an
+    /// AtmosphericBody, so approach an airless moon and the height, radius and position are
+    /// whatever the last atmosphere left behind. Every shader that reads it - the engine's
+    /// own included, which treats height &lt;= 0 as "no air" - is being told there is an
+    /// atmosphere where there is none. Ours reads it to decide whether a source has gone
+    /// behind a limb's haze, which is a question it would then answer about the wrong body.
+    ///
+    /// Zeroing it on exactly the frames the engine would not have written it cannot race
+    /// that write, and leaves the value alone whenever it is real.
+    /// </summary>
+    private static void ClearStaleAtmosphere(object program, object viewport, int slot)
+    {
+        Type vt = viewport.GetType();
+        if (!_cameras.TryGetValue(vt, out MethodInfo? getCamera))
+            _cameras[vt] = getCamera = AccessTools.Method(vt, "GetCamera");
+        object? camera = getCamera?.Invoke(viewport, null);
+        if (camera == null) return;
+
+        Type ct = camera.GetType();
+        if (!_nearby.TryGetValue(ct, out PropertyInfo? nearbyProp))
+            _nearby[ct] = nearbyProp = AccessTools.Property(ct, "NearbyCelestial");
+        object? nearby = nearbyProp?.GetValue(camera);
+
+        _atmosphericBody ??= AccessTools.TypeByName("KSA.AtmosphericBody");
+        if (_atmosphericBody == null) return;
+        if (nearby != null && _atmosphericBody.IsInstanceOfType(nearby)) return;   // real air
+
+        _lightingArray ??= AccessTools.Field(program.GetType(), "_lightingData");
+        if (_lightingArray?.GetValue(null) is not Array lighting || slot >= lighting.Length) return;
+        object box = lighting.GetValue(slot)!;
+        _atmosphereHeight ??= AccessTools.Field(box.GetType(), "AtmosphereHeight");
+        if (_atmosphereHeight == null) return;
+        if (_atmosphereHeight.GetValue(box) is not float height || height == 0.0f) return;
+
+        _atmosphereHeight.SetValue(box, 0.0f);
+        lighting.SetValue(box, slot);
+
+        if (!_airLogged)
+        {
+            ShaderShadow.Log("clearing the stale atmosphere height near airless bodies "
+                             + "(the engine leaves the last one's behind)");
+            _airLogged = true;
         }
     }
 }
