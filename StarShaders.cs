@@ -27,11 +27,6 @@ internal static class StarShaders
     };
 
     /// <summary>
-    /// Shaders we change a line of rather than replace. The Sun's surface is a raymarch of
-    /// several hundred lines that does its job; only its palette is wrong, and taking custody
-    /// of the whole file to fix two numbers would be taking on its maintenance for nothing.
-    /// </summary>
-    /// <summary>
     /// Files served from our tree rather than the game's. Anything we edit belongs here, unless
     /// it reaches the compiler as an #include of something that is already on the list: shaderc
     /// resolves an #include relative to the file that asked for it, so Sun.frag is here to carry
@@ -39,6 +34,12 @@ internal static class StarShaders
     /// </summary>
     public static readonly string[] Redirected = { "Sun/Sun.frag", "MilkyWay.frag", "PostProcess/sunbloom.frag" };
 
+    /// <summary>
+    /// Shaders we change a line of rather than replace. The Sun's surface is a raymarch of
+    /// several hundred lines that do their job, and taking custody of all of it to fix a few
+    /// numbers would mean maintaining it forever. Each anchor is a whole line, so an update
+    /// that touches one leaves the file stock and says so in the log.
+    /// </summary>
     public static readonly (string Name, string Find, string Replace)[] Edits =
     {
         // The sphere and its corona are coloured by a blackbody ramp over 1400-2700 K, which is
@@ -89,12 +90,35 @@ internal static class StarShaders
          + "    float edge = max(fwidth(impact), 1e-6);\n"
          + "    float alpha = 1. - smoothstep(sunRadius - edge, sunRadius + edge, impact);\n"
          + "\n"
+         + "    // The engine draws this mesh below 88 solar radii and not above it, in one\n"
+         + "    // step. Our sprite draws the Sun underneath at every distance, at the same\n"
+         + "    // angular size and now the same level, so the two carry the same disc - but the\n"
+         + "    // sphere has a limb and a darkened edge where the sprite has a halo, and trading\n"
+         + "    // one for the other between two frames is the jump that was left. It fades in\n"
+         + "    // across the top half of the range instead, and has reached nothing by the time\n"
+         + "    // the engine drops it. Both distances are read off the radius the lighting\n"
+         + "    // carries, the same number the engine reads them from, so they cannot drift.\n"
+         + "    alpha *= 1. - smoothstep(44. * sunRadius, 88. * sunRadius, length(centerPos));\n"
+         + "\n"
          + "    // Limb darkening: a sight line near the edge is slanted, so it reaches optical\n"
          + "    // depth one higher in the photosphere, where the gas is cooler. The classical\n"
          + "    // linear law, u = 0.6, which is about right in the visible. Without it a disc\n"
          + "    // this evenly lit reads as a cut-out rather than a sphere.\n"
          + "    float mu = sqrt(max(1. - impact * impact / (sunRadius * sunRadius), 0.));\n"
          + "    total_color *= 1. - 0.6 * (1. - mu);"),
+
+        // The sphere came out of the raymarch at 1.3 while our sprite's core is clamped at
+        // MaxOutput, and the Sun's own profile is orders past that clamp at every distance the
+        // sphere is on screen - so the sprite was some eighteen times the brighter of the two.
+        // That is the step across the handover, and inside it the saturated part of our halo
+        // stood out past the sphere's edge as a brighter ring, which is the disc reading larger
+        // than the sphere, and the bloom appearing to double. One shared number removes all of
+        // it: the two write the same value, so which of them is on top stops mattering.
+        ("Sun/Sun.frag",
+           "    // Apply bloom\n"
+         + "    col.rgb *= 1.3;",
+           "    // Real Stars: the level our own sprite draws the Sun at, so they can be traded.\n"
+         + "    col.rgb *= " + MaxOutput + ";"),
 
         // The last thing drawing a Sun that is not ours.
         //
@@ -162,6 +186,16 @@ internal static class StarShaders
     /// <remarks>
     /// rsMagFaint and rsBytesPerMag MUST match make_star_binary.py, which writes the byte.
     /// </remarks>
+    /// <summary>
+    /// The brightest value any of our sprites writes, and now the value the Sun's sphere is
+    /// drawn at too. A bright star's core genuinely does saturate a fixed exposure, so this is
+    /// a limit rather than a look; it keeps one star out of the range where the engine's bloom
+    /// would smear it across the frame. The Sun's own profile is far past it at every distance
+    /// the sphere is on screen, so the sphere matching it is what makes the two interchangeable.
+    /// Turn it down if the Sun blooms too hard - it binds on nothing else in the catalogue.
+    /// </summary>
+    public const string MaxOutput = "24.0";
+
     private const string Tuning = """
         // ---- Real Stars tuning ----
         // Our catalogue stores ABSOLUTE magnitude linearly in the byte: byte 1 is the faint
@@ -447,10 +481,8 @@ internal static class StarShaders
         layout (location = 0) out vec4 outColor;
 
         {{Tuning}}
-        // HDR headroom. A bright star's core genuinely does saturate a fixed exposure, so this
-        // is not a look but a limit: it keeps one star out of the range where any later bloom
-        // would smear it across the frame.
-        const float rsMaxOutput = 24.0;
+        // HDR headroom, shared with the Sun's sphere. See StarShaders.MaxOutput.
+        const float rsMaxOutput = {{MaxOutput}};
 
         void main(void)
         {
@@ -569,7 +601,7 @@ internal static class StarShaders
         layout (location = 0) out vec4 outColor;
 
         {{Tuning}}
-        const float rsMaxOutput = 24.0;
+        const float rsMaxOutput = {{MaxOutput}};
 
         void main(void)
         {
