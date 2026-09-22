@@ -114,11 +114,14 @@ internal static class StarShaders
         // stood out past the sphere's edge as a brighter ring, which is the disc reading larger
         // than the sphere, and the bloom appearing to double. One shared number removes all of
         // it: the two write the same value, so which of them is on top stops mattering.
+        // The value is not constant - it gives brightness back as the disc fills the frame,
+        // standing in for the exposure adaptation the engine has not got - but both sides read
+        // it from the same expression, so it moves for both of them together.
         ("Sun/Sun.frag",
            "    // Apply bloom\n"
          + "    col.rgb *= 1.3;",
            "    // Real Stars: the level our own sprite draws the Sun at, so they can be traded.\n"
-         + "    col.rgb *= " + MaxOutput + ";"),
+         + "    col.rgb *= " + SunLevelGlsl + ";"),
 
         // The last thing drawing a Sun that is not ours.
         //
@@ -195,6 +198,40 @@ internal static class StarShaders
     /// Turn it down if the Sun blooms too hard - it binds on nothing else in the catalogue.
     /// </summary>
     public const string MaxOutput = "24.0";
+
+    /// <summary>
+    /// Standing in for auto exposure, which the engine does not have yet. A fixed exposure
+    /// chosen to suit the Sun as a distant point leaves it blazing once it fills the frame, so
+    /// the disc gives brightness back as it grows: below the knee nothing changes, above it the
+    /// level falls inversely with the disc's share of the screen, and it stops at the floor.
+    ///
+    /// The knee is the disc RADIUS as a fraction of the screen's HEIGHT. At 0.04 it starts
+    /// around 0.1 AU, well inside the 0.41 AU where the sphere appears, so the handover is
+    /// untouched. The floor is what the engine drew the sphere at before any of this, which is
+    /// a sensible place to stop. Inverse is the compromise: true adaptation works on the light
+    /// collected, which goes as the AREA, so squaring the ratio is the other end of the range.
+    /// </summary>
+    public const string SunExposureKnee = "0.04";
+    public const string SunExposureFloor = "1.3";
+
+    /// <summary>
+    /// The Sun's disc radius as a fraction of the screen's height. Resolution cancels: pixels
+    /// per radian is half the height times projection[1][1], so dividing by the height leaves
+    /// half the vertical focal length times the angular radius. Field of view does not cancel,
+    /// which is the point - zooming in fills the frame the same way approaching does, and costs
+    /// the same brightness.
+    /// </summary>
+    private const string SunFractionGlsl =
+        "(0.5 * abs(global.camera.projection[1][1]) * global.lighting.sunRadius"
+        + " / max(length(global.lighting.sunPosition.xyz), 1.0))";
+
+    /// <summary>
+    /// The level the Sun's disc is drawn at. Written once and read by both the sprite and the
+    /// sphere, because the moment they disagree the handover becomes visible again.
+    /// </summary>
+    public const string SunLevelGlsl =
+        "clamp(" + MaxOutput + " * " + SunExposureKnee + " / max(" + SunFractionGlsl + ", 1e-6), "
+        + SunExposureFloor + ", " + MaxOutput + ")";
 
     private const string Tuning = """
         // ---- Real Stars tuning ----
@@ -505,7 +542,11 @@ internal static class StarShaders
             // Take the last of it to zero before the quad's edge, so the sprite never shows.
             intensity *= smoothstep(1.0f, 0.85f, r);
 
-            outColor = vec4(inColor.rgb * min(intensity, rsMaxOutput), 1.0f);
+            // The Sun gives brightness back as it fills the frame - see SunExposureKnee.
+            // inStar.z is the disc radius, and is zero for everything else in the catalogue,
+            // so every other star keeps the plain ceiling.
+            float cap = inStar.z > 0.0 ? {{SunLevelGlsl}} : rsMaxOutput;
+            outColor = vec4(inColor.rgb * min(intensity, cap), 1.0f);
         }
         """;
 
