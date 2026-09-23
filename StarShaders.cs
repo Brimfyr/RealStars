@@ -310,7 +310,12 @@ internal static class StarShaders
             float whitePx = rsPsfCore * sqrt(max(pow(max(peak / rsMaxOutput, 1.0),
                                                      1.0 / rsPsfBeta) - 1.0, 0.0));
             float looksPx = discPx + whitePx;
-            float sunDepth = clip.z / clip.w;
+            // The camera's far plane is one AU - exactly - so past Earth's orbit the Sun lies
+            // beyond it and its reversed depth goes negative. Every sky pixel is then "nearer"
+            // than the Sun, and the burst was judged hidden and went out. Clamped at zero, which
+            // is what the engine's own flare does with its sun depth: the Sun is then behind
+            // everything drawn, which a Sun past the far plane is, and in front of empty sky.
+            float sunDepth = max(clip.z / clip.w, 0.0);
             int samples = 0, hidden = 0;
             for (int ring = 0; ring < 3; ring++)
             {
