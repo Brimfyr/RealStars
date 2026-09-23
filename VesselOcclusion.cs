@@ -32,9 +32,10 @@ internal static class VesselOcclusion
     /// <summary>
     /// Where the disc is sampled, as (fraction of its angular radius, number around). The centre
     /// counts once. Thirteen rays in all: enough that a hull crossing the Sun takes it down in
-    /// steps no eye will separate at the size the Sun is drawn.
+    /// steps no eye will separate at the size the Sun is drawn. The outer ring sits close to the
+    /// edge, because the band outside it is called covered before the hull has reached it.
     /// </summary>
-    private static readonly (double Fraction, int Count)[] Rings = { (0.45, 4), (0.85, 8) };
+    private static readonly (double Fraction, int Count)[] Rings = { (0.5, 4), (0.92, 8) };
 
     private sealed record Candidate(object Matrix, IList Parts, double X, double Y, double Z,
                                     double Radius);

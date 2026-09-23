@@ -166,9 +166,15 @@ internal static class SunGlow
             // is sized by magnitude alone, which is a different number from the disc, and the
             // Sun snaps to it the moment the engine stops drawing the sphere.
             // And whatever vessel is between the camera and it. The direction is the Sun's,
-            // from the camera: the camera's offset from it, reversed.
+            // from the camera: the camera's offset from it, reversed. The size is the Sun as it
+            // LOOKS - its disc and the white ring the profile saturates past the limb - because
+            // that is what a hull has to cover before the Sun has gone. The geometric disc alone
+            // is a quarter of the white at 1 AU, and asking about it called the Sun covered
+            // while most of what looked like it was still showing.
+            double whitePx = PlanetPhotometry.WhiteRingPx(Magnitude(distance, radius));
+            double looksAngular = (radius / distance) * (discPx + whitePx) / Math.Max(discPx, 1e-6);
             double covered = VesselOcclusion.Covered(camera, -dx / distance, -dy / distance,
-                                                     -dz / distance, distance, radius / distance);
+                                                     -dz / distance, distance, looksAngular);
             VesselOcclusion.PublishSun(__instance, slot, covered);
 
             _lightingArray ??= AccessTools.Field(__instance.GetType(), "_lightingData");

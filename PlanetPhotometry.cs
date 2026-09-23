@@ -211,6 +211,26 @@ internal static class PlanetPhotometry
         return Math.Clamp(glow, MinGlowPx, MaxGlowPx);
     }
 
+    /// <summary>The star shaders' ceiling, read from the one place it is written.</summary>
+    public static readonly double MaxOutput =
+        double.Parse(StarShaders.MaxOutput, System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// How far past a source's limb the profile stays saturated - white - in pixels. The Sun
+    /// looks bigger than its disc by exactly this: four or five pixels at every distance, since
+    /// the rolloff flattens its flux range, so at 1 AU the geometric disc is only a quarter of
+    /// the white. Nothing inside the ring is any less bright than the disc, so to an eye it IS
+    /// the disc, and it is what a hull has to cover before the Sun has gone. Mirrors the star
+    /// shader, which works out the same ring for the limb.
+    /// </summary>
+    public static double WhiteRingPx(double magnitude)
+    {
+        double flux = Math.Pow(10.0, -0.4 * (CompressMagnitude(magnitude) - MagRef));
+        double peak = flux * Brightness * (PsfBeta - 1.0) / (Math.PI * PsfCore * PsfCore);
+        double ratio = Math.Max(peak / MaxOutput, 1.0);
+        return PsfCore * Math.Sqrt(Math.Max(Math.Pow(ratio, 1.0 / PsfBeta) - 1.0, 0.0));
+    }
+
     /// <summary>The blend the caller applies after us: full sprite below 1 px across, gone by 4,
     /// where the body starts being drawn as an actual sphere instead.</summary>
     public static double SpriteMul(double pixelDiameter)

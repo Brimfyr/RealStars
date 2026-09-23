@@ -771,7 +771,23 @@ internal static class StarShaders
             // And what is in front of it. Fading the flux rather than the drawn colour means
             // the halo and the rays shrink with it, which is what less light does, and an
             // occulted star leaves nothing sticking out past the limb that hid it.
-            flux *= rsVisibility(starDir, distancePc * rsParsecMetres, sunAngularRad);
+            // The Sun fades over what it LOOKS like, not what it is. At its brightness the
+            // profile stays saturated for four or five pixels past the limb, and nothing inside
+            // that ring is any less than white, so to an eye the ring is the disc - at 1 AU the
+            // geometric disc is a quarter of the white. Fading over the disc alone put the Sun
+            // out behind a limb while most of what looked like it was still in view. The ceiling
+            // is the plain one, as the CPU side's matching sum uses: the exposure only lowers it
+            // inside a tenth of an AU, where the disc dwarfs the ring anyway.
+            float sunLooksRad = sunAngularRad;
+            if (discPx > 0.0)
+            {
+                float fullPeak = flux * rsBrightness * (rsPsfBeta - 1.0)
+                               / (rsPi * rsPsfCore * rsPsfCore);
+                float whitePx = rsPsfCore * sqrt(max(pow(max(fullPeak / {{MaxOutput}}, 1.0),
+                                                         1.0 / rsPsfBeta) - 1.0, 0.0));
+                sunLooksRad = sunAngularRad * (discPx + whitePx) / discPx;
+            }
+            flux *= rsVisibility(starDir, distancePc * rsParsecMetres, sunLooksRad);
 
             // Vessels too, for the Sun. They are nowhere a shader can reach, so VesselOcclusion
             // casts the engine's own part raycasts across the Sun's disc on the CPU and leaves
