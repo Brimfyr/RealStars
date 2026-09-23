@@ -122,7 +122,7 @@ internal static class Starburst
         // How high this body's air stops letting starlight through, for the limb test. It goes
         // out every frame, and zero when there is no air, so nothing stale is left behind.
         bool hasAir = nearby != null && _atmosphericBody.IsInstanceOfType(nearby);
-        LimbAir.Publish(program, hasAir ? nearby! : null!, slot, viewport);
+        LimbAir.Publish(program, hasAir ? nearby : null, slot);
 
         if (hasAir) return;                                     // real air; leave its height be
 

@@ -729,36 +729,60 @@ internal static class StarShaders
         //
         // The fade runs over softRad, so a point source goes in a pixel and a resolved one
         // over its own disc: an eclipse then dims exactly as the disc is covered.
-        // How much of a source the air above a body takes, which is a different question
-        // from what its rock takes and answers a good deal higher up. At Titan the haze is
-        // already opaque tens of kilometres above ground that cannot be seen at all, so a
-        // source behind the haze is gone whatever the surface is doing.
+        // How much of a source the air around the body takes, which is a different question
+        // from what its rock takes, and answered much higher up. At Titan the haze is opaque
+        // over a surface that cannot be seen at all, so a source behind it is gone whatever the
+        // ground is doing. The engine's composite dims the pixels it draws through the air,
+        // which is why a core and its halo fade through a limb - but a ray reaching past the
+        // limb is a pixel looking at clear sky, so the source is faded by what IT looks through.
         //
-        // The engine's composite extincts the pixels it draws, which is why a core and its
-        // halo fade correctly through a limb - but a ray reaching past that limb is a pixel
-        // looking at clear sky, and it survived. This fades the source by what the SOURCE is
-        // looking through, the same way the geometry did.
+        // LimbAir.cs publishes the air as the engine describes it: vertical optical depth and
+        // scale height, Rayleigh then Mie, the same Visual numbers that draw the sky. The slant
+        // depth is the vertical one times the Chapman function - how much longer a slanted path
+        // through an exponential atmosphere is than a straight-up one. This is Schueler's form,
+        // exactly as the engine's CPU transmittance writes it, but with the grazing constant
+        // corrected from sqrt(x) to sqrt(pi x / 2): the engine's version reads a ray skimming
+        // the limb as eighty percent of its true column, and the rendered sky - which is what
+        // dims the Sun this is keeping pace with - integrates the whole of it.
         //
-        // The two altitudes come from LimbAir.cs, in metres above the surface, because they
-        // cannot be got at from here: they depend on the density at the surface and the scale
-        // height, and what the shaders are handed is the atmosphere's VISUAL height, which is
-        // sized to look right and says nothing about how far up it is opaque. Taking fractions
-        // of that was the first attempt; Titan came out right and Earth, Mars and Venus came
-        // out far too early, which is the giveaway. Mars has a visual atmosphere and almost no
-        // extinction at all.
+        // It works from inside the air as well as from orbit: upward rays take the first branch,
+        // and a ray that dips through a tangent point on its way out takes the second.
+        float rsChapman(float planetInHeights, float altitudeInHeights, float mu)
+        {
+            float x = planetInHeights + altitudeInHeights;
+            float c = sqrt(1.5707963 * x);
+            float atCamera = c * exp(-altitudeInHeights);
+            if (mu >= 0.0) return atCamera / (c * mu + 1.0);
+            float xt = sqrt(max(1.0 - mu * mu, 0.0)) * x;         // the tangent point
+            float ct = sqrt(1.5707963 * xt);
+            return 2.0 * ct * exp(planetInHeights - xt) - atCamera / (1.0 - c * mu);
+        }
+
         float rsAirVisibility(vec3 dirToSource, float sourceDistM)
         {
-            float opaque = intBitsToFloat(global.celestial.pad0);
-            float clear = intBitsToFloat(global.celestial.pad1);
-            if (!(clear > opaque)) return 1.0;      // no air, or none worth the name
+            vec2 rayleigh = unpackHalf2x16(uint(global.celestial.pad0));  // depth, height in km
+            vec2 mie = unpackHalf2x16(uint(global.celestial.pad1));
+            bool hasRayleigh = rayleigh.x > 0.0 && rayleigh.y > 0.0;
+            bool hasMie = mie.x > 0.0 && mie.y > 0.0;
+            if (!hasRayleigh && !hasMie) return 1.0;               // no air, or none worth it
             vec3 centre = global.lighting.planetPosition.xyz;
             float d = length(centre);
             if (d < 1.0 || d >= sourceDistM * 0.9999) return 1.0;
-            float cosSep = dot(centre / d, dirToSource);
-            if (cosSep <= 0.0) return 1.0;          // the body is behind us
-            // How high the ray grazes: its distance from the centre, less the surface.
-            float graze = d * sqrt(max(1.0 - cosSep * cosSep, 0.0)) - global.lighting.planetRadius;
-            return smoothstep(opaque, clear, graze);
+            float planet = global.lighting.planetRadius;
+            float altitude = max(d - planet, 0.0);
+            float mu = -dot(centre / d, dirToSource);              // up is away from the centre
+            float tau = 0.0;
+            if (hasRayleigh)
+            {
+                float h = rayleigh.y * 1000.0;
+                tau += rayleigh.x * rsChapman(planet / h, altitude / h, mu);
+            }
+            if (hasMie)
+            {
+                float h = mie.y * 1000.0;
+                tau += mie.x * rsChapman(planet / h, altitude / h, mu);
+            }
+            return exp(-tau);
         }
 
         float rsVisibility(vec3 dirToSource, float sourceDistM, float softRad)
