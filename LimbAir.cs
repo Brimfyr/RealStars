@@ -36,7 +36,7 @@ internal static class LimbAir
     private const double OpaqueDepth = 4.0;
     private const double ClearDepth = 0.1;
 
-    private static FieldInfo? _celestialArray, _pad0, _pad1;
+    private static FieldInfo? _celestialArray, _pad0, _pad1, _pad2;
     private static readonly Dictionary<Type, PropertyInfo?> _meanRadius = new();
     private static bool _logged;
 
@@ -92,9 +92,14 @@ internal static class LimbAir
             object box = celestial.GetValue(slot)!;
             _pad0 ??= AccessTools.Field(box.GetType(), "pad0");
             _pad1 ??= AccessTools.Field(box.GetType(), "pad1");
+            _pad2 ??= AccessTools.Field(box.GetType(), "pad2");
             if (_pad0 == null || _pad1 == null) return;
             _pad0.SetValue(box, BitConverter.SingleToInt32Bits((float)opaque));
             _pad1.SetValue(box, BitConverter.SingleToInt32Bits((float)clear));
+            // The third word is the Sun's share hidden by vessels, which SunGlow fills in later
+            // this same frame. Cleared here so that a frame which never gets that far cannot
+            // leave last frame's value behind.
+            _pad2?.SetValue(box, 0);
             celestial.SetValue(box, slot);
         }
         catch (Exception ex)

@@ -368,6 +368,14 @@ internal static class PlanetPhotometry
                                              Scintillation.SimSeconds);
         if (factor != 1.0) magnitude -= 2.5 * Math.Log10(Math.Max(factor, 1e-6));
 
+        // And anything with parts standing in front of it. A planet drawn as a sprite is a
+        // point, so one ray settles it; a hull in the way takes the light, and with it the
+        // halo and the burst, which would otherwise ring the silhouette of a ship that is
+        // hiding the thing they belong to.
+        double covered = VesselOcclusion.Covered(camera, gx / obsDist, gy / obsDist, gz / obsDist,
+                                                 obsDist, 0.0);
+        if (covered > 0.0) magnitude -= 2.5 * Math.Log10(Math.Max(1.0 - covered, 1e-6));
+
         return magnitude;
     }
 

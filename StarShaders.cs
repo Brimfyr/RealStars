@@ -773,6 +773,13 @@ internal static class StarShaders
             // occulted star leaves nothing sticking out past the limb that hid it.
             flux *= rsVisibility(starDir, distancePc * rsParsecMetres, sunAngularRad);
 
+            // Vessels too, for the Sun. They are nowhere a shader can reach, so VesselOcclusion
+            // casts the engine's own part raycasts across the Sun's disc on the CPU and leaves
+            // the share it found hidden in the celestial block's last spare word. Zero, which is
+            // also what the engine writes there, means nothing in the way.
+            if (discPx > 0.0)
+                flux *= 1.0 - clamp(intBitsToFloat(global.celestial.pad2), 0.0, 1.0);
+
             // Moffat beta = 2 at unit energy peaks at 1/(pi*core^2), so the profile crosses
             // one display level at this radius. Sizing the quad to it means the sprite is
             // exactly the star's visible extent and never a disc with a hard edge.

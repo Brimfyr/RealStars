@@ -165,6 +165,12 @@ internal static class SunGlow
             // halo starts at the limb rather than at the centre. Without it the sprite's core
             // is sized by magnitude alone, which is a different number from the disc, and the
             // Sun snaps to it the moment the engine stops drawing the sphere.
+            // And whatever vessel is between the camera and it. The direction is the Sun's,
+            // from the camera: the camera's offset from it, reversed.
+            double covered = VesselOcclusion.Covered(camera, -dx / distance, -dy / distance,
+                                                     -dz / distance, distance, radius / distance);
+            VesselOcclusion.PublishSun(__instance, slot, covered);
+
             _lightingArray ??= AccessTools.Field(__instance.GetType(), "_lightingData");
             if (_lightingArray?.GetValue(null) is Array lighting && slot < lighting.Length)
             {
