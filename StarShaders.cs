@@ -32,7 +32,8 @@ internal static class StarShaders
     /// resolves an #include relative to the file that asked for it, so Sun.frag is here to carry
     /// the raymarch we edit, not because we change Sun.frag itself.
     /// </summary>
-    public static readonly string[] Redirected = { "Sun/Sun.frag", "MilkyWay.frag", "PostProcess/sunbloom.frag" };
+    public static readonly string[] Redirected =
+        { "Sun/Sun.frag", "MilkyWay.frag", "PostProcess/sunbloom.frag", "PostProcess/sunbloom_merge.comp" };
 
     /// <summary>
     /// Shaders we change a line of rather than replace. The Sun's surface is a raymarch of
@@ -136,6 +137,21 @@ internal static class StarShaders
         // real magnitude, so the pass has nothing left to contribute. Only the sun's own term
         // goes: the occlusion output below is untouched, so the lens flare still knows whether
         // the Sun is in view, and the spokes and ghosts in sunbloom_blur.comp are left alone.
+        // The Sun's starburst is drawn here, over the finished image, rather than with the
+        // stars. It is scatter inside whoever is looking, so it lies over everything they are
+        // looking at - and drawn with the stars it went UNDER the first thing in front of the
+        // Sun, a hull or a ridge or a limb taking every ray that crossed it. This pass runs
+        // after the world, writes the final HDR image, skips what is under the UI, and does not
+        // include the atmosphere functions, so Real Atmospheres keeps its own.
+        ("PostProcess/sunbloom_merge.comp",
+         "layout (set = 1, binding = 2) uniform sampler2D bloomColor;",
+         "layout (set = 1, binding = 2) uniform sampler2D bloomColor;\n" + MergeSunBurst),
+        ("PostProcess/sunbloom_merge.comp",
+         "    vec4 finalColor = screenCol + vec4(bloom.rgb, 0.0);",
+         "    vec4 finalColor = screenCol + vec4(bloom.rgb, 0.0);\n"
+         + "    // Real Stars: the Sun's starburst, over everything - see rsSunBurst.\n"
+         + "    finalColor.rgb += rsSunBurst(vec2(screenCoords) + vec2(0.5), dim);"),
+
         ("PostProcess/sunbloom.frag",
          "    float sunPower = innerSun * innerSunScalar + outerSun * sunData.outerSunColorScalar;",
          "    float sunPower = 0.;  // Real Stars: the Sun is drawn as the star it is"),
@@ -235,6 +251,90 @@ internal static class StarShaders
     public const string SunLevelGlsl =
         "clamp(" + MaxOutput + " * pow(" + SunExposureKnee + " / max(" + SunFractionGlsl + ", 1e-6), "
         + SunExposurePower + "), " + SunExposureFloor + ", " + MaxOutput + ")";
+
+    /// <summary>
+    /// The Sun's starburst as the merge pass draws it, over the finished image. The tuning comes
+    /// with it, so the rays are the same rays the sprites draw - the same eye - and the
+    /// occlusion is the finished depth buffer, which is the best answer there is to what is in
+    /// front of the Sun.
+    /// </summary>
+    private const string MergeSunBurst = $$"""
+
+        // ---- Real Stars ----
+        {{Tuning}}
+        const float rsMaxOutput = {{MaxOutput}};
+        const float rsSunAbsMag = 4.83;            // what the catalogue carries for the Sun
+
+        // Where the Sun is, and what of it is left to see, from the finished frame.
+        //
+        // Being drawn after the world means the depth buffer is complete, and that answers what
+        // is in front of the Sun better than anything worked out beforehand: hulls, ridges,
+        // moons, any of it, to the pixel. The Sun as it LOOKS - its disc and the white ring the
+        // profile saturates past the limb - is sampled at thirteen points, and the share with
+        // something drawn nearer than the Sun is the share hidden. The Sun's own sphere writes
+        // no depth, so it cannot hide itself. Air writes none either, so the haze keeps its term.
+        //
+        // What is left sets the rays' BRIGHTNESS, linearly: the scatter that makes them is a
+        // fixed share of the light that gets in, so a sliver of Sun throws a sliver of burst.
+        // Their reach was the only thing that fell before, and it falls by magnitude - ninety
+        // five percent covered is still seven magnitudes past the burst line - which is why the
+        // rays outlived the Sun behind a hull and through Titan's haze.
+        vec3 rsSunBurst(vec2 pixel, ivec2 dim)
+        {
+            if (rsBurstStrength() <= 0.0) return vec3(0.0);
+
+            vec3 sunEgo = global.lighting.sunPosition.xyz;
+            float dist = length(sunEgo);
+            if (dist <= 0.0) return vec3(0.0);
+            vec4 clip = global.camera.viewProjection * vec4(sunEgo, 1.0);
+            if (clip.w <= 0.0) return vec3(0.0);                   // behind the camera
+            vec2 ndc = clip.xy / clip.w;
+            vec2 sunPx = (ndc * 0.5 + 0.5) * vec2(dim);
+
+            // The whole Sun, before anything is in the way, and how far its rays could reach.
+            float mag = rsSunAbsMag + 5.0 * log(dist / (10.0 * rsParsecMetres)) * 0.4342944819;
+            float peak = pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef))
+                       * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
+            float reach = rsBurstReachPx(peak);
+            vec2 offset = pixel - sunPx;
+            float skirt = reach + 8.0;                              // and the blur beside a ray
+            if (reach <= 0.0 || dot(offset, offset) > skirt * skirt) return vec3(0.0);
+
+            // Off the frame, nothing entered.
+            vec2 pastEdge = 0.5 * vec2(dim) * (abs(ndc) - vec2(1.0));
+            float framed = 1.0 - smoothstep(-rsBurstEdgePx, rsBurstEdgePx, max(pastEdge.x, pastEdge.y));
+            if (framed <= 0.0) return vec3(0.0);
+
+            // What is in front of it, from the depth buffer, across the Sun as it looks.
+            float discPx = max(intBitsToFloat(global.lighting.lpPad1), 0.0);
+            float whitePx = rsPsfCore * sqrt(max(pow(max(peak / rsMaxOutput, 1.0),
+                                                     1.0 / rsPsfBeta) - 1.0, 0.0));
+            float looksPx = discPx + whitePx;
+            float sunDepth = clip.z / clip.w;
+            int samples = 0, hidden = 0;
+            for (int ring = 0; ring < 3; ring++)
+            {
+                int count = ring == 0 ? 1 : (ring == 1 ? 4 : 8);
+                float radius = ring == 0 ? 0.0 : (ring == 1 ? 0.5 : 0.92);
+                for (int i = 0; i < count; i++)
+                {
+                    float a = 6.28318531 * (float(i) + 0.5 * radius) / float(count);
+                    ivec2 at = ivec2(sunPx + radius * looksPx * vec2(cos(a), sin(a)));
+                    if (any(lessThan(at, ivec2(0))) || any(greaterThanEqual(at, dim))) continue;
+                    samples++;
+                    // Reversed depth: nearer is larger, and the Sun is almost at zero.
+                    if (texelFetch(samplerDepth, at, 0).r > sunDepth) hidden++;
+                }
+            }
+            float seen = samples > 0 ? 1.0 - float(hidden) / float(samples) : 1.0;
+            seen *= rsAirVisibility(sunEgo / dist, dist);
+            if (seen <= 0.0) return vec3(0.0);
+
+            vec3 light = global.lighting.sunColor.rgb;
+            vec3 tint = light / max(max(light.r, light.g), max(light.b, 1e-6));
+            return tint * rsBurst(offset, rsBurstReachPx(peak * seen) * framed) * seen;
+        }
+        """;
 
     private const string Tuning = """
         // ---- Real Stars tuning ----
@@ -704,6 +804,10 @@ internal static class StarShaders
         // point source, which is everything except the Sun seen from close by), w = how far the
         // starburst reaches, also in px, and zero when there is not one
         layout (location = 2) out vec4 outStar;
+        // How much of the source is left to see. The rays are scatter of the light that gets
+        // in, so their brightness goes with it; their reach alone falls by magnitude, far too
+        // slowly, and they outlived the source.
+        layout (location = 3) out float outBurstLevel;
 
         {{Tuning}}
         const float rsMinGlowPx = 1.5;            // a faint star must still cover a pixel
@@ -787,14 +891,15 @@ internal static class StarShaders
                                                          1.0 / rsPsfBeta) - 1.0, 0.0));
                 sunLooksRad = sunAngularRad * (discPx + whitePx) / discPx;
             }
-            flux *= rsVisibility(starDir, distancePc * rsParsecMetres, sunLooksRad);
+            float seen = rsVisibility(starDir, distancePc * rsParsecMetres, sunLooksRad);
 
             // Vessels too, for the Sun. They are nowhere a shader can reach, so VesselOcclusion
             // casts the engine's own part raycasts across the Sun's disc on the CPU and leaves
             // the share it found hidden in the celestial block's last spare word. Zero, which is
             // also what the engine writes there, means nothing in the way.
             if (discPx > 0.0)
-                flux *= 1.0 - clamp(intBitsToFloat(global.celestial.pad2), 0.0, 1.0);
+                seen *= 1.0 - clamp(intBitsToFloat(global.celestial.pad2), 0.0, 1.0);
+            flux *= seen;
 
             // Moffat beta = 2 at unit energy peaks at 1/(pi*core^2), so the profile crosses
             // one display level at this radius. Sizing the quad to it means the sprite is
@@ -810,7 +915,9 @@ internal static class StarShaders
             // stops the Sun snapping to a smaller size when the sphere stops being drawn.
             // The burst is sized by the same rule and reaches further than the halo for
             // anything bright enough to have one, so the quad takes whichever wins.
-            float burstPx = rsBurstReachPx(peak);
+            // The Sun's burst is not drawn here at all: it goes over the finished image, in the
+            // merge pass, because it is an optic effect and belongs on top of the world.
+            float burstPx = discPx > 0.0 ? 0.0 : rsBurstReachPx(peak);
 
             // Drawn on the same shell the game uses, but along the direction just computed.
             vec4 worldPosition = global.camera.viewProjection * vec4(starDir * rsStarShell, 1);
@@ -833,6 +940,7 @@ internal static class StarShaders
 
             outUv = uv[gl_VertexIndex];
             outStar = vec4(flux, spritePx, discPx, burstPx);
+            outBurstLevel = seen;
 
             // Pixels to clip units. The offset is added in clip space, so it is divided by w
             // downstream, and x spans the screen width over 2 NDC units; the aspect factor on
@@ -854,6 +962,7 @@ internal static class StarShaders
         layout (location = 0) in vec3 inColor;
         layout (location = 1) in vec2 inUv;
         layout (location = 2) in vec4 inStar;     // flux, sprite px, disc px, burst reach px
+        layout (location = 3) in float inBurstLevel; // how much of the source is left to see
 
         layout (location = 0) out vec4 outColor;
 
@@ -892,7 +1001,8 @@ internal static class StarShaders
             // and running them through a ceiling meant for a saturating point would only take
             // the colour back out of them. How far they reach was settled in the vertex
             // shader, where the quad was sized to hold them.
-            vec3 burst = rsBurst((inUv - vec2(0.5f)) * 2.0f * inStar.y, inStar.w) * edgeFade;
+            vec3 burst = rsBurst((inUv - vec2(0.5f)) * 2.0f * inStar.y, inStar.w)
+                       * edgeFade * inBurstLevel;
 
             outColor = vec4(inColor.rgb * (vec3(min(intensity, cap)) + burst), 1.0f);
         }
@@ -938,6 +1048,7 @@ internal static class StarShaders
         // scalePixel itself; a burst reaches past the halo, so now it need not be.
         layout (location = 4) out flat float outSpritePx;
         layout (location = 5) out flat float outBurstPx;
+        layout (location = 6) out flat float outBurstLevel; // what of the body is left to see
 
         {{Tuning}}
 
@@ -972,7 +1083,8 @@ internal static class StarShaders
             // are at. Taking it off the peak and turning that back into a radius keeps the one
             // channel telling the truth, so the fragment shader needs to know nothing about it.
             float dist = length(instanceData.positionEgo);
-            peak *= rsVisibility(instanceData.positionEgo / max(dist, 1.0f), dist, 0.0f);
+            float seen = rsVisibility(instanceData.positionEgo / max(dist, 1.0f), dist, 0.0f);
+            peak *= seen;
             glowPx = rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels, 1.0f / rsPsfBeta) - 1.0f, 0.0f));
 
             // Venus asks for a burst, Neptune does not. The quad takes whichever reaches further.
@@ -1009,6 +1121,7 @@ internal static class StarShaders
             outScalePixel = glowPx;
             outSpritePx = spritePx;
             outBurstPx = burstPx;
+            outBurstLevel = seen;
             outUV = uv[gl_VertexIndex];
         }
         """;
@@ -1025,6 +1138,7 @@ internal static class StarShaders
         layout (location = 3) in vec2 inUV;
         layout (location = 4) in flat float inSpritePx;
         layout (location = 5) in flat float inBurstPx;
+        layout (location = 6) in flat float inBurstLevel;
 
         layout (location = 0) out vec4 outColor;
 
@@ -1051,7 +1165,8 @@ internal static class StarShaders
             intensity *= edgeFade;
             // The same rays, from the same eye, as the stars get - and beside the core for the
             // same reason.
-            vec3 burst = rsBurst((inUV - vec2(0.5f)) * 2.0f * quadPx, inBurstPx) * edgeFade;
+            vec3 burst = rsBurst((inUV - vec2(0.5f)) * 2.0f * quadPx, inBurstPx)
+                       * edgeFade * inBurstLevel;
 
             // The engine has already scaled this colour by its own phase term. Ours is in the
             // magnitude, so take the hue and leave the brightness alone.
