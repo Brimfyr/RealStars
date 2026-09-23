@@ -1,13 +1,13 @@
 # Build Real Stars and produce an installable zip for players.
 #
-#   .\package.ps1                         # version 0.1.0, game build read from your settings.toml
-#   .\package.ps1 -Version 0.2.0 -GameBuild v2026.9.10.5438
+#   .\package.ps1                         # version 1.0.0, game build read from your settings.toml
+#   .\package.ps1 -Version 1.0.0 -GameBuild v2026.9.10.5438
 #
 # Output: dist\RealStars-v<Version>-ksa<GameBuild>.zip (+ .sha256). The zip's root is a
 # RealStars\ folder, because KSA uses the folder name as the mod id. Ships exactly the files in
 # release-files.txt; StarMap.API/0Harmony are NOT included (the StarMap launcher provides them).
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "1.0.0",
     [string]$GameBuild = ""
 )
 $ErrorActionPreference = "Stop"
@@ -54,6 +54,8 @@ Copy-Item "$proj\bin\Release\RealStars.dll" $stage
 Copy-Item "$proj\mod.toml" $stage
 Copy-Item "$proj\README.md" $stage
 Copy-Item "$proj\LICENSE" $stage
+# The Hipparcos acknowledgement travels with the catalogue it covers.
+Copy-Item "$proj\CREDITS.md" $stage
 foreach ($name in $assets) {
     $src = Join-Path "$proj\assets" $name
     if (-not (Test-Path $src)) { throw "release asset missing: assets\$name" }

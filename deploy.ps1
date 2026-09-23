@@ -35,6 +35,8 @@ $assets = Get-Content "$proj\release-files.txt" |
 Copy-Item "$proj\bin\Release\RealStars.dll" $dest -Force
 Copy-Item "$proj\mod.toml" $dest -Force
 Copy-Item "$proj\README.md" $dest -Force
+Copy-Item "$proj\LICENSE" $dest -Force
+Copy-Item "$proj\CREDITS.md" $dest -Force
 foreach ($name in $assets) {
     $src = Join-Path "$proj\assets" $name
     if (-not (Test-Path $src)) { throw "release asset missing: assets\$name" }
