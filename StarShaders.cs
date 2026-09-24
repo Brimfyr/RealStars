@@ -309,7 +309,16 @@ internal static class StarShaders
                 }
             }
             float seen = samples > 0 ? 1.0 - float(hidden) / float(samples) : 1.0;
-            seen *= rsAirVisibility(sunEgo / dist, dist);
+            // The depth has the rock; the air is averaged over the Sun as it looks, as the sprite
+            // takes it, not along the centre ray, which meets the ground half a Sun too early.
+            if (discPx > 0.0)
+            {
+                float segment;
+                seen *= rsAirOverDisc(sunEgo / dist, dist,
+                                      global.lighting.sunRadius / dist * looksPx / discPx, segment);
+            }
+            else
+                seen *= rsAirVisibility(sunEgo / dist, dist);
             if (seen <= 0.0) return vec3(0.0);
 
             vec3 light = global.lighting.sunColor.rgb;
@@ -735,39 +744,87 @@ internal static class StarShaders
             return 2.0 * ct * exp(planetInHeights - xt) - atCamera / (1.0 - c * mu);
         }
 
-        float rsAirVisibility(vec3 dirToSource, float sourceDistM)
+        bool rsHasAir()
         {
             vec2 rayleigh = unpackHalf2x16(uint(global.celestial.pad0));  // depth, height in km
             vec2 mie = unpackHalf2x16(uint(global.celestial.pad1));
-            bool hasRayleigh = rayleigh.x > 0.0 && rayleigh.y > 0.0;
-            bool hasMie = mie.x > 0.0 && mie.y > 0.0;
-            if (!hasRayleigh && !hasMie) return 1.0;               // no air, or none worth it
+            return (rayleigh.x > 0.0 && rayleigh.y > 0.0) || (mie.x > 0.0 && mie.y > 0.0);
+        }
+
+        // Slant optical depth of one ray through the nearby body's air.
+        float rsAirDepth(float planet, float altitude, float mu)
+        {
+            vec2 rayleigh = unpackHalf2x16(uint(global.celestial.pad0));
+            vec2 mie = unpackHalf2x16(uint(global.celestial.pad1));
+            float tau = 0.0;
+            if (rayleigh.x > 0.0 && rayleigh.y > 0.0)
+            {
+                float h = rayleigh.y * 1000.0;
+                tau += rayleigh.x * rsChapman(planet / h, altitude / h, mu);
+            }
+            if (mie.x > 0.0 && mie.y > 0.0)
+            {
+                float h = mie.y * 1000.0;
+                tau += mie.x * rsChapman(planet / h, altitude / h, mu);
+            }
+            return tau;
+        }
+
+        float rsAirVisibility(vec3 dirToSource, float sourceDistM)
+        {
+            if (!rsHasAir()) return 1.0;                           // no air, or none worth it
+            vec3 centre = global.lighting.planetPosition.xyz;
+            float d = length(centre);
+            if (d < 1.0 || d >= sourceDistM * 0.9999) return 1.0;
+            float planet = global.lighting.planetRadius;
+            float mu = -dot(centre / d, dirToSource);              // up is away from the centre
+            return exp(-rsAirDepth(planet, max(d - planet, 0.0), mu));
+        }
+
+        // The same for a source with a size, over its disc instead of along its centre. The air
+        // under a limb is a few scale heights deep, while the Sun as it looks spans twenty km of
+        // limb altitude from low orbit and thousands from the Moon's distance. The ray through
+        // its centre meets the ground when half of it is still in clear sky, and the whole Sun
+        // went out with that ray, in Earth's and Mars's air; Titan's haze dims it long before.
+        // The disc is sliced parallel to the limb: the share the rock leaves is a circular
+        // segment, exactly, returned in segment, and the air is averaged over that share at
+        // eight heights, within a percent of the full integral and smooth as the Sun sets.
+        float rsAirOverDisc(vec3 dirToSource, float sourceDistM, float radius, out float segment)
+        {
+            segment = 1.0;
+            if (!rsHasAir()) return 1.0;
             vec3 centre = global.lighting.planetPosition.xyz;
             float d = length(centre);
             if (d < 1.0 || d >= sourceDistM * 0.9999) return 1.0;
             float planet = global.lighting.planetRadius;
             float altitude = max(d - planet, 0.0);
-            float mu = -dot(centre / d, dirToSource);              // up is away from the centre
-            float tau = 0.0;
-            if (hasRayleigh)
+            float sep = acos(clamp(dot(centre / d, dirToSource), -1.0, 1.0));
+            float limb = asin(clamp(planet / d, 0.0, 1.0));
+            float a = clamp((limb - sep) / max(radius, 1e-9), -1.0, 1.0);   // the limb, across the disc
+            segment = (acos(a) - a * sqrt(1.0 - a * a)) / rsPi;
+            if (segment <= 0.0) return 0.0;
+            float air = 0.0, weights = 0.0;
+            for (int k = 0; k < 8; k++)
             {
-                float h = rayleigh.y * 1000.0;
-                tau += rayleigh.x * rsChapman(planet / h, altitude / h, mu);
+                float u = mix(a, 1.0, (float(k) + 0.5) / 8.0);            // up the visible share
+                float w = sqrt(max(1.0 - u * u, 0.0));                     // the disc's width there
+                air += w * exp(-rsAirDepth(planet, altitude, -cos(sep + u * radius)));
+                weights += w;
             }
-            if (hasMie)
-            {
-                float h = mie.y * 1000.0;
-                tau += mie.x * rsChapman(planet / h, altitude / h, mu);
-            }
-            return exp(-tau);
+            return weights > 0.0 ? air / weights : 1.0;
         }
 
         float rsVisibility(vec3 dirToSource, float sourceDistM, float softRad)
         {
+            // A source with a size, behind air, is covered by the air and the rock together, over
+            // its disc. rsAirOverDisc takes the nearby body whole, so the loop leaves it out.
+            bool overDisc = softRad > 0.0 && rsHasAir();
+            vec3 airBody = global.lighting.planetPosition.xyz;
             float vis = 1.0;
             for (int i = 0; i < global.celestial.bodyCount; i++)
             {
                 vec4 body = global.celestial.bodies[i];
+                if (overDisc && distance(body.xyz, airBody) < 1e-3 * body.w) continue;
                 float d = length(body.xyz);
                 // Nothing at the camera, and nothing at or past the source - which is what
                 // keeps a body from hiding itself, since it is in this list too.
@@ -788,7 +845,10 @@ internal static class StarShaders
                 vis = min(vis, smoothstep(limb - soft, limb + soft, sep));
                 if (vis <= 0.0) return 0.0;
             }
-            return min(vis, rsAirVisibility(dirToSource, sourceDistM));
+            if (!overDisc) return min(vis, rsAirVisibility(dirToSource, sourceDistM));
+            float segment;
+            float air = rsAirOverDisc(dirToSource, sourceDistM, softRad, segment);
+            return min(vis, segment * air);
         }
         """;
 
