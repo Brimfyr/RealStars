@@ -2,7 +2,7 @@
 
 Stars, planets and the Sun drawn with their real brightness, colour and position, for Kitten Space Agency. A [URL=https://github.com/StarMapLoader/StarMap]StarMap[/URL] mod.
 
-No game files are modified. At launch the mod builds patched copies of the game's star, planet, Sun and Milky Way shaders and loads those instead. If a game update changes one of those shaders, it is left stock until the mod is updated. Works alongside Real Atmospheres.
+No game files are modified. At launch the mod builds patched copies of the game's star, planet and Sun shaders and loads those instead. If a game update changes one of those shaders, it is left stock until the mod is updated. Works alongside Real Atmospheres.
 
 [HEADING=2]Features[/HEADING]
 
@@ -13,7 +13,6 @@ No game files are modified. At launch the mod builds patched copies of the game'
 [*]Brightness from magnitude, drawn with a realistic point spread function
 [*]Parallax: stars sit at their real distances and shift as you travel
 [*]Twinkling through atmospheres, stronger and more colourful toward the horizon, following simulation time
-[*]Milky Way in its correct orientation
 [/LIST]
 
 [HEADING=3]Planets[/HEADING]

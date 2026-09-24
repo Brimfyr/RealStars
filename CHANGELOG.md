@@ -14,4 +14,3 @@
 - Sun brightness reduced as it fills the screen, replacing the stock sun sprite and lens flare.
 - Occlusion of stars, planets and the Sun by planets, atmospheres and vessels.
 - Starbursts modelled on the human eye, on the Sun and planets brighter than magnitude −3.
-- Milky Way in its correct orientation.

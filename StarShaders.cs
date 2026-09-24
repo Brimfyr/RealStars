@@ -33,7 +33,7 @@ internal static class StarShaders
     /// the raymarch we edit, not because we change Sun.frag itself.
     /// </summary>
     public static readonly string[] Redirected =
-        { "Sun/Sun.frag", "MilkyWay.frag", "PostProcess/sunbloom.frag", "PostProcess/sunbloom_merge.comp" };
+        { "Sun/Sun.frag", "PostProcess/sunbloom.frag", "PostProcess/sunbloom_merge.comp" };
 
     /// <summary>
     /// Shaders we change a line of rather than replace. The Sun's surface is a raymarch of
@@ -155,29 +155,6 @@ internal static class StarShaders
         ("PostProcess/sunbloom.frag",
          "    float sunPower = innerSun * innerSunScalar + outerSun * sunData.outerSunColorScalar;",
          "    float sunPower = 0.;  // Real Stars: the Sun is drawn as the star it is"),
-
-        // The Milky Way sits about 50 degrees out of place, and always has. Its rotation is
-        // built by GalacticPlane.BuildRotation from EquatorialDirection(ra, dec), which is
-        // (cos(dec)cos(ra), sin(dec), cos(dec)sin(ra)) - equatorial, Y up. The world it is then
-        // applied to is ecliptic, Z up: the planets orbit in its XY plane and the shipped star
-        // binary is in it too. Measured against the real sky the galactic centre lands 55.3
-        // degrees from where it belongs and the north galactic pole 49.1.
-        //
-        // Nothing here changes the matrix. The view direction is converted out of the world's
-        // frame and into the one the matrix was built for, first: equatorial by the obliquity,
-        // then Y-up by swapping the last two components. That is a conversion of the input
-        // frame, so it holds whichever way round the engine's matrix convention runs. With it,
-        // the centre lands 0.07 degrees from Sagittarius A*, which is the width of the IAU's
-        // own definition.
-        ("MilkyWay.frag",
-         "    sampleDir   = (global.camera.galacticPlane * vec4(sampleDir, 0.0)).xyz;",
-         "    // Real Stars: into the equatorial Y-up frame the galactic rotation was built in.\n"
-         + "    const float rsCosObliquity = 0.91748206;   // 23.4392911 degrees\n"
-         + "    const float rsSinObliquity = 0.39777716;\n"
-         + "    sampleDir   = vec3(sampleDir.x,\n"
-         + "                       rsSinObliquity * sampleDir.y + rsCosObliquity * sampleDir.z,\n"
-         + "                       rsCosObliquity * sampleDir.y - rsSinObliquity * sampleDir.z);\n"
-         + "    sampleDir   = (global.camera.galacticPlane * vec4(sampleDir, 0.0)).xyz;"),
     };
 
     // ---------------------------------------------------------------------------------

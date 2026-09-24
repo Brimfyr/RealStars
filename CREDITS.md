@@ -19,4 +19,4 @@ Required acknowledgement when distributing a release:
 
 ## Not shipped
 
-The game's own star binary, Milky Way texture and Sun mesh are used in place and not redistributed.
+The game's own star binary and Sun mesh are used in place and not redistributed.
