@@ -323,7 +323,7 @@ internal static class StarShaders
 
             vec3 light = global.lighting.sunColor.rgb;
             vec3 tint = light / max(max(light.r, light.g), max(light.b, 1e-6));
-            return tint * rsBurst(offset, rsBurstReachPx(peak * seen) * framed) * seen;
+            return tint * rsBurst(offset, rsBurstReachPx(peak * seen) * framed, discPx) * seen;
         }
         """;
 
@@ -493,120 +493,193 @@ internal static class StarShaders
             return exp(sigma * n - 0.5 * sigma * sigma);
         }
 
-        // ---- the observer's starburst ----
-        // What a bright point does to an EYE rather than to a camera. A lens stopped down by
-        // N straight blades gives N spikes, or 2N when N is odd: evenly spaced, all one
-        // length, all one brightness. That is the look the stock burst has, and this replaces
-        // it.
+        // ---- the observer's glare ----
+        // What a bright point does to an EYE rather than to a camera, after Ritschel et al.,
+        // "Temporal Glare" (Eurographics 2009). The eye diffracts light at the edge of its pupil
+        // and at particles in its lens, vitreous and cornea, and the Fourier transform of that
+        // aperture is its point spread function. A camera's blades give N even spikes. The
+        // particles give speckle instead, and since each wavelength sees the same pattern scaled
+        // by its own length, a white source's speckle is drawn out into radial needles: the
+        // ciliary corona. glare_sim.py ran that model (a 2.2 mm pupil, as an eye looking at the
+        // Sun has, 870 particles, a 4096-sample aperture and 32 wavelengths) and glare_fit.py
+        // read the needles back out of it: their directions, their strengths above the glow, and
+        // their lengths, which follow from strength because the glow falls as r^-2.8.
         //
-        // An eye has no blades. Its lens is grown from fibres that meet along suture lines - a
-        // Y at the front, an inverted Y at the back, branching further with age - and those,
-        // with the tear film and the edge of the iris, leave many fine rays of unequal length
-        // and brightness at irregular angles. They differ between people, and between one
-        // person's two eyes.
+        // The pattern belongs to whoever is looking, not to what is being looked at: every light
+        // in the frame shows the same needles, fixed in the screen.
         //
-        // So the pattern is a constant rather than something hashed per source: it belongs to
-        // whoever is looking, not to what is being looked at. Every light in the frame shows
-        // the same one, fixed in the screen, and only its size changes - with brightness, the
-        // way the halo already does. eye_rays.py generated the table and says where it is from.
-        //
-        // A ray is a line rather than a fan: its width is constant in pixels, which is why a
-        // spike reads as a needle, and it fades from its base to its tip rather than falling
-        // away as a point source's halo does. There are many of them and each is faint, which
-        // is the difference between an eye's burst and the four hard spikes of a lens.
-        const int rsRayCount = 84;
-        // xy: direction, so the shader needs no trig. z: reach, as a fraction of the
-        // burst's length. w: amplitude, as a fraction of the brightest ray. eye_rays.py
-        // generated these and says where they come from.
-        const vec4 rsRays[rsRayCount] = vec4[rsRayCount](
-            vec4( 0.99980,  0.02023, 0.815, 0.574),
-            vec4( 0.99595,  0.08987, 0.721, 0.684),
-            vec4( 0.98977,  0.14267, 0.455, 0.735),
-            vec4( 0.97348,  0.22876, 0.580, 0.399),
-            vec4( 0.95404,  0.29969, 0.256, 0.634),
-            vec4( 0.92526,  0.37932, 0.947, 0.731),
-            vec4( 0.89673,  0.44257, 0.300, 0.772),
-            vec4( 0.86662,  0.49897, 0.373, 0.720),
-            vec4( 0.82437,  0.56606, 0.330, 0.981),
-            vec4( 0.78751,  0.61630, 0.270, 0.312),
-            vec4( 0.72385,  0.68996, 0.830, 0.981),
-            vec4( 0.68971,  0.72408, 0.891, 0.541),
-            vec4( 0.61283,  0.79022, 0.756, 0.472),
-            vec4( 0.56880,  0.82247, 0.752, 0.195),
-            vec4( 0.50408,  0.86366, 0.707, 0.431),
-            vec4( 0.43636,  0.89977, 0.749, 0.832),
-            vec4( 0.38198,  0.92417, 0.963, 0.717),
-            vec4( 0.28271,  0.95921, 0.851, 0.277),
-            vec4( 0.20352,  0.97907, 0.589, 0.245),
-            vec4( 0.15559,  0.98782, 0.723, 0.674),
-            vec4( 0.05445,  0.99852, 0.859, 0.686),
-            vec4(-0.01277,  0.99992, 0.463, 0.568),
-            vec4(-0.08499,  0.99638, 0.787, 0.335),
-            vec4(-0.13155,  0.99131, 0.419, 0.401),
-            vec4(-0.24009,  0.97075, 0.643, 0.407),
-            vec4(-0.28177,  0.95948, 0.485, 0.421),
-            vec4(-0.37603,  0.92661, 1.000, 0.995),
-            vec4(-0.41822,  0.90835, 0.248, 0.726),
-            vec4(-0.50299,  0.86429, 0.423, 0.888),
-            vec4(-0.57424,  0.81869, 0.571, 0.365),
-            vec4(-0.61990,  0.78468, 0.633, 0.216),
-            vec4(-0.69066,  0.72318, 0.927, 0.440),
-            vec4(-0.72290,  0.69096, 0.379, 0.710),
-            vec4(-0.79355,  0.60850, 0.895, 0.951),
-            vec4(-0.83487,  0.55044, 0.399, 0.706),
-            vec4(-0.87314,  0.48747, 0.548, 0.629),
-            vec4(-0.90643,  0.42235, 0.273, 0.327),
-            vec4(-0.93123,  0.36444, 0.518, 0.475),
-            vec4(-0.95266,  0.30402, 0.988, 0.789),
-            vec4(-0.97669,  0.21467, 0.861, 0.441),
-            vec4(-0.98783,  0.15553, 0.871, 0.459),
-            vec4(-0.99752,  0.07041, 0.510, 0.756),
-            vec4(-1.00000, -0.00093, 0.712, 0.460),
-            vec4(-0.99571, -0.09255, 0.366, 0.523),
-            vec4(-0.98994, -0.14146, 0.607, 0.695),
-            vec4(-0.97289, -0.23128, 0.618, 0.379),
-            vec4(-0.95883, -0.28399, 0.224, 0.324),
-            vec4(-0.93802, -0.34658, 0.816, 0.875),
-            vec4(-0.89205, -0.45193, 0.949, 0.299),
-            vec4(-0.87526, -0.48364, 0.388, 0.486),
-            vec4(-0.82797, -0.56078, 0.749, 0.307),
-            vec4(-0.78164, -0.62373, 0.454, 0.548),
-            vec4(-0.73105, -0.68232, 0.827, 0.970),
-            vec4(-0.69137, -0.72250, 0.731, 0.757),
-            vec4(-0.62082, -0.78395, 0.996, 0.749),
-            vec4(-0.57374, -0.81904, 0.289, 0.501),
-            vec4(-0.51116, -0.85949, 0.855, 0.721),
-            vec4(-0.41661, -0.90909, 0.896, 0.384),
-            vec4(-0.38396, -0.92335, 0.643, 0.306),
-            vec4(-0.28898, -0.95733, 0.353, 0.797),
-            vec4(-0.23680, -0.97156, 0.738, 0.939),
-            vec4(-0.15946, -0.98720, 0.740, 0.364),
-            vec4(-0.08979, -0.99596, 0.934, 0.741),
-            vec4(-0.00454, -0.99999, 0.782, 0.185),
-            vec4( 0.09285, -0.99568, 0.455, 0.234),
-            vec4( 0.13676, -0.99060, 0.311, 0.757),
-            vec4( 0.20475, -0.97881, 0.838, 0.742),
-            vec4( 0.30707, -0.95169, 0.828, 0.716),
-            vec4( 0.34922, -0.93704, 0.887, 0.290),
-            vec4( 0.42625, -0.90461, 0.573, 0.911),
-            vec4( 0.51194, -0.85902, 0.225, 0.669),
-            vec4( 0.55490, -0.83192, 0.911, 0.234),
-            vec4( 0.61898, -0.78541, 0.556, 0.601),
-            vec4( 0.67411, -0.73863, 0.984, 0.524),
-            vec4( 0.73729, -0.67558, 0.245, 0.614),
-            vec4( 0.78589, -0.61837, 0.783, 0.372),
-            vec4( 0.82750, -0.56146, 0.892, 0.815),
-            vec4( 0.85671, -0.51579, 0.628, 0.493),
-            vec4( 0.89716, -0.44170, 0.322, 0.734),
-            vec4( 0.93217, -0.36203, 0.901, 0.886),
-            vec4( 0.95514, -0.29616, 0.706, 0.714),
-            vec4( 0.97494, -0.22245, 0.676, 0.346),
-            vec4( 0.98895, -0.14822, 0.429, 0.601),
-            vec4( 0.99708, -0.07642, 0.967, 0.366)
+        // The paper's other feature, the lenticular halo, is left out on purpose. It is the lens
+        // cortex's fibres acting as a grating, and the cortex only lies inside a pupil wider than
+        // about 4 mm: a dark-adapted eye at a streetlamp. Looking at the Sun the pupil is near
+        // 2 mm, and nothing else in the sky is bright enough to show one.
+        const int rsNeedleCount = 160;
+        // xy: direction, so the shader needs no trig. z: length, as a fraction of the burst's
+        // reach. w: strength, as a fraction of the strongest. glare_fit.py wrote these.
+        const vec4 rsNeedles[rsNeedleCount] = vec4[rsNeedleCount](
+            vec4( 0.99171,  0.12850, 0.821, 0.574),
+            vec4( 0.98778,  0.15583, 0.806, 0.544),
+            vec4( 0.98501,  0.17247, 0.817, 0.566),
+            vec4( 0.98108,  0.19359, 0.771, 0.479),
+            vec4( 0.97364,  0.22807, 0.505, 0.146),
+            vec4( 0.96814,  0.25041, 0.541, 0.177),
+            vec4( 0.95144,  0.30785, 0.718, 0.393),
+            vec4( 0.91668,  0.39962, 0.636, 0.279),
+            vec4( 0.89460,  0.44687, 0.738, 0.424),
+            vec4( 0.88120,  0.47275, 0.768, 0.476),
+            vec4( 0.85615,  0.51673, 0.524, 0.162),
+            vec4( 0.83402,  0.55174, 0.546, 0.181),
+            vec4( 0.82372,  0.56700, 0.551, 0.186),
+            vec4( 0.81046,  0.58580, 0.713, 0.385),
+            vec4( 0.79117,  0.61160, 0.565, 0.200),
+            vec4( 0.78074,  0.62486, 0.670, 0.324),
+            vec4( 0.77106,  0.63676, 0.587, 0.222),
+            vec4( 0.76120,  0.64851, 0.704, 0.372),
+            vec4( 0.74095,  0.67156, 0.623, 0.263),
+            vec4( 0.72636,  0.68732, 0.521, 0.159),
+            vec4( 0.71358,  0.70057, 0.698, 0.363),
+            vec4( 0.69947,  0.71466, 0.534, 0.170),
+            vec4( 0.66700,  0.74506, 0.749, 0.443),
+            vec4( 0.65433,  0.75621, 0.714, 0.387),
+            vec4( 0.63083,  0.77592, 0.591, 0.227),
+            vec4( 0.61281,  0.79023, 0.551, 0.186),
+            vec4( 0.57078,  0.82110, 0.650, 0.297),
+            vec4( 0.55046,  0.83486, 0.652, 0.299),
+            vec4( 0.53759,  0.84321, 0.639, 0.283),
+            vec4( 0.51936,  0.85456, 0.800, 0.532),
+            vec4( 0.49557,  0.86857, 0.778, 0.493),
+            vec4( 0.46869,  0.88336, 0.654, 0.302),
+            vec4( 0.45508,  0.89045, 0.625, 0.265),
+            vec4( 0.43999,  0.89800, 0.658, 0.307),
+            vec4( 0.39540,  0.91851, 0.734, 0.418),
+            vec4( 0.36989,  0.92907, 0.650, 0.297),
+            vec4( 0.35416,  0.93518, 0.609, 0.247),
+            vec4( 0.33833,  0.94103, 0.657, 0.306),
+            vec4( 0.31368,  0.94953, 0.601, 0.237),
+            vec4( 0.03221,  0.99948, 0.638, 0.282),
+            vec4(-0.01687,  0.99986, 0.741, 0.429),
+            vec4(-0.07050,  0.99751, 0.649, 0.295),
+            vec4(-0.09344,  0.99563, 0.630, 0.271),
+            vec4(-0.12393,  0.99229, 0.891, 0.723),
+            vec4(-0.18002,  0.98366, 0.803, 0.538),
+            vec4(-0.19960,  0.97988, 0.967, 0.910),
+            vec4(-0.22807,  0.97364, 0.661, 0.311),
+            vec4(-0.25635,  0.96658, 0.834, 0.599),
+            vec4(-0.30201,  0.95331, 0.776, 0.489),
+            vec4(-0.32531,  0.94561, 0.666, 0.318),
+            vec4(-0.36418,  0.93133, 0.828, 0.587),
+            vec4(-0.40103,  0.91606, 0.751, 0.446),
+            vec4(-0.41643,  0.90917, 0.517, 0.156),
+            vec4(-0.61038,  0.79211, 0.646, 0.292),
+            vec4(-0.62366,  0.78169, 0.960, 0.890),
+            vec4(-0.63676,  0.77106, 0.872, 0.680),
+            vec4(-0.66127,  0.75015, 0.565, 0.200),
+            vec4(-0.68172,  0.73161, 0.602, 0.239),
+            vec4(-0.70711,  0.70711, 0.853, 0.638),
+            vec4(-0.72000,  0.69397, 0.963, 0.900),
+            vec4(-0.73056,  0.68285, 0.785, 0.506),
+            vec4(-0.75015,  0.66127, 0.747, 0.440),
+            vec4(-0.77592,  0.63083, 0.708, 0.378),
+            vec4(-0.79861,  0.60184, 0.765, 0.469),
+            vec4(-0.81225,  0.58331, 0.571, 0.206),
+            vec4(-0.82110,  0.57078, 0.517, 0.155),
+            vec4(-0.83571,  0.54918, 0.696, 0.360),
+            vec4(-0.84567,  0.53370, 0.600, 0.236),
+            vec4(-0.85376,  0.52067, 0.789, 0.512),
+            vec4(-0.88693,  0.46190, 0.541, 0.176),
+            vec4(-0.89732,  0.44137, 0.618, 0.257),
+            vec4(-0.91790,  0.39681, 0.830, 0.592),
+            vec4(-0.93299,  0.35990, 0.732, 0.414),
+            vec4(-0.95694,  0.29028, 0.693, 0.355),
+            vec4(-0.96337,  0.26819, 0.748, 0.441),
+            vec4(-0.97604,  0.21760, 0.771, 0.480),
+            vec4(-0.98138,  0.19208, 0.972, 0.923),
+            vec4(-0.98501,  0.17247, 0.733, 0.417),
+            vec4(-0.98826,  0.15280, 0.722, 0.400),
+            vec4(-0.99070,  0.13610, 0.810, 0.553),
+            vec4(-0.99374,  0.11175, 0.687, 0.347),
+            vec4(-0.99894,  0.04600, 0.566, 0.201),
+            vec4(-0.99171, -0.12850, 0.869, 0.674),
+            vec4(-0.98872, -0.14976, 0.743, 0.433),
+            vec4(-0.98631, -0.16491, 0.829, 0.589),
+            vec4(-0.98254, -0.18606, 0.808, 0.547),
+            vec4(-0.96737, -0.25338, 0.557, 0.192),
+            vec4(-0.96043, -0.27852, 0.540, 0.176),
+            vec4(-0.95144, -0.30785, 0.640, 0.284),
+            vec4(-0.91851, -0.39540, 0.763, 0.467),
+            vec4(-0.89528, -0.44550, 0.830, 0.591),
+            vec4(-0.88480, -0.46598, 0.648, 0.294),
+            vec4(-0.86087, -0.50883, 0.590, 0.226),
+            vec4(-0.85136, -0.52459, 0.554, 0.189),
+            vec4(-0.83571, -0.54918, 0.514, 0.153),
+            vec4(-0.81581, -0.57831, 0.679, 0.335),
+            vec4(-0.79676, -0.60429, 0.598, 0.234),
+            vec4(-0.78646, -0.61765, 0.675, 0.330),
+            vec4(-0.76517, -0.64383, 0.831, 0.593),
+            vec4(-0.73578, -0.67722, 0.548, 0.183),
+            vec4(-0.72000, -0.69397, 0.699, 0.364),
+            vec4(-0.70057, -0.71358, 0.618, 0.257),
+            vec4(-0.66700, -0.74506, 0.681, 0.339),
+            vec4(-0.65549, -0.75520, 0.719, 0.394),
+            vec4(-0.62366, -0.78169, 0.551, 0.186),
+            vec4(-0.60307, -0.79769, 0.539, 0.175),
+            vec4(-0.58952, -0.80775, 0.570, 0.205),
+            vec4(-0.57330, -0.81935, 0.712, 0.384),
+            vec4(-0.54918, -0.83571, 0.678, 0.335),
+            vec4(-0.52590, -0.85055, 0.767, 0.474),
+            vec4(-0.50883, -0.86087, 0.784, 0.503),
+            vec4(-0.49423, -0.86933, 0.641, 0.285),
+            vec4(-0.45508, -0.89045, 0.556, 0.191),
+            vec4(-0.43999, -0.89800, 0.526, 0.163),
+            vec4(-0.39540, -0.91851, 0.762, 0.465),
+            vec4(-0.33833, -0.94103, 0.643, 0.288),
+            vec4(-0.31514, -0.94905, 0.600, 0.237),
+            vec4( 0.00307, -1.00000, 0.549, 0.184),
+            vec4( 0.02607, -0.99966, 0.750, 0.444),
+            vec4( 0.06438, -0.99793, 0.723, 0.401),
+            vec4( 0.08274, -0.99657, 0.490, 0.134),
+            vec4( 0.12393, -0.99229, 0.902, 0.747),
+            vec4( 0.15431, -0.98802, 0.614, 0.253),
+            vec4( 0.19208, -0.98138, 1.000, 1.000),
+            vec4( 0.26671, -0.96378, 0.799, 0.532),
+            vec4( 0.29028, -0.95694, 0.790, 0.514),
+            vec4( 0.31077, -0.95049, 0.687, 0.347),
+            vec4( 0.33255, -0.94308, 0.560, 0.195),
+            vec4( 0.36418, -0.93133, 0.820, 0.572),
+            vec4( 0.37843, -0.92563, 0.690, 0.350),
+            vec4( 0.40243, -0.91545, 0.712, 0.384),
+            vec4( 0.41643, -0.90917, 0.603, 0.240),
+            vec4( 0.61038, -0.79211, 0.673, 0.327),
+            vec4( 0.62366, -0.78169, 0.944, 0.849),
+            vec4( 0.63558, -0.77204, 0.800, 0.533),
+            vec4( 0.65433, -0.75621, 0.494, 0.136),
+            vec4( 0.68285, -0.73056, 0.523, 0.160),
+            vec4( 0.70711, -0.70711, 0.804, 0.540),
+            vec4( 0.71894, -0.69508, 0.988, 0.965),
+            vec4( 0.73474, -0.67835, 0.793, 0.520),
+            vec4( 0.75015, -0.66127, 0.772, 0.481),
+            vec4( 0.76120, -0.64851, 0.655, 0.303),
+            vec4( 0.77978, -0.62606, 0.712, 0.384),
+            vec4( 0.79861, -0.60184, 0.703, 0.370),
+            vec4( 0.81581, -0.57831, 0.745, 0.436),
+            vec4( 0.83486, -0.55046, 0.520, 0.158),
+            vec4( 0.84567, -0.53370, 0.801, 0.534),
+            vec4( 0.89045, -0.45508, 0.494, 0.137),
+            vec4( 0.89732, -0.44137, 0.700, 0.366),
+            vec4( 0.91044, -0.41364, 0.735, 0.419),
+            vec4( 0.92092, -0.38976, 0.770, 0.479),
+            vec4( 0.93299, -0.35990, 0.755, 0.453),
+            vec4( 0.95649, -0.29175, 0.689, 0.350),
+            vec4( 0.96337, -0.26819, 0.783, 0.502),
+            vec4( 0.97604, -0.21760, 0.496, 0.138),
+            vec4( 0.98138, -0.19208, 0.920, 0.790),
+            vec4( 0.98778, -0.15583, 0.794, 0.522),
+            vec4( 0.99131, -0.13154, 0.803, 0.538),
+            vec4( 0.99374, -0.11175, 0.674, 0.329),
+            vec4( 0.99762, -0.06897, 0.541, 0.177)
         );
-        const float rsRayWidthPx = 0.42;    // across a ray: about a pixel of visible width
-        const float rsRayLevel = 0.13;      // how bright a ray is drawn, in display units
-        const float rsRayTaper = 1.6;       // and how it falls from base to tip, as taper^this
+        const float rsNeedleWidthPx = 0.42;  // across a needle: the speckle, about an arcminute
+        const float rsNeedleLevel = 0.0886;  // display units: the old rays' light over more needles
+        const float rsNeedleTaper = 1.6;     // how a needle falls from base to tip, as taper^this
         //
         // Where rays begin at all. The scatter that makes them is always there, but it is a
         // thin thing spread over the retina and it only lifts out of the noise for a source
@@ -626,17 +699,31 @@ internal static class StarShaders
         // rays still streaming in from a source that went several frames ago.
         const float rsBurstEdgePx = 10.0;
 
-        // Blur and colour, which are one thing rather than two. An eye does not bring every
-        // wavelength to a focus in the same plane - across the visible range the difference is
-        // about two dioptres, blue in front of the retina and red behind it - so a ray is at
-        // its sharpest in the middle of the spectrum and spread either side of it, most at the
-        // blue end. Each channel gets its own width across the ray and its own reach along it,
-        // which leaves a ray white down its middle, cool along its soft edges and warm at its
-        // tip, and leaves the burst as a whole the colour of whatever threw it. Aberration
-        // moves light about; it does not repaint the source.
-        const vec3 rsRayChroma = vec3(0.88, 1.0, 1.18);  // relative defocus, R G B
-        const float rsRayBlur = 0.45;       // weight of the soft skirt beside the sharp core
-        const float rsRayBlurScale = 3.2;   // and how much wider that skirt is
+        // Colour, the paper's way. The pattern at wavelength lambda is the 575 nm one scaled by
+        // lambda/575, so a needle's red runs further than its blue and it ends warm, while the
+        // burst as a whole stays the colour of whatever threw it. Six bands of the CIE 1931
+        // observer in linear sRGB, summing to white: xyz is a band's weight, w is 575/lambda at
+        // its middle. The negative weights are sRGB's gamut, clamped where the colour is summed.
+        const int rsBandCount = 6;
+        const vec4 rsBands[rsBandCount] = vec4[rsBandCount](
+            vec4( 0.0561, -0.0658,  0.5416, 1.3529),   // 425 nm
+            vec4(-0.0889,  0.0703,  0.5692, 1.2105),   // 475 nm
+            vec4(-0.2752,  0.6151, -0.0263, 1.0952),   // 525 nm
+            vec4( 0.5007,  0.4254, -0.0686, 1.0000),   // 575 nm
+            vec4( 0.7211, -0.0379, -0.0145, 0.9200),   // 625 nm
+            vec4( 0.0862, -0.0071, -0.0014, 0.8519)    // 675 nm
+        );
+        // Beside the sharp core, a soft skirt: the needle as a slightly defocused eye sees it.
+        const float rsNeedleSkirt = 0.45;       // weight of the skirt beside the core
+        const float rsNeedleSkirtScale = 3.2;   // and how much wider it is
+        // A source wider than the 20' ray-formation angle (the Sun inside about 1.6 AU) blurs its
+        // own needles, each convolved with the disc: sigma about half the disc's radius.
+        const float rsDiscSpread = 0.5;
+        // In time. The pupil pulses (hippus) and the lens particles move with the eye's
+        // accommodation, at 0.3-2 Hz, so the glare breathes and its needles flicker. Real time,
+        // not simulation time: this is the viewer's eye, not the sky.
+        const float rsHippus = 0.06;            // the pupil's swing, as a fraction of its size
+        const float rsNeedleFlicker = 0.25;     // how far a needle's strength swings
 
         // The game's own lens flare setting, carried into these shaders - which cannot see the
         // flare buffer - through the camera UBO's spare word. Starburst.cs writes it: the
@@ -659,43 +746,51 @@ internal static class StarShaders
             return clamp(mags * rsRayPxPerMag * rsBurstStrength(), 0.0, rsMaxRayPx);
         }
 
-        // The burst at an offset from the source, in screen pixels.
+        // The burst at an offset from the source, in screen pixels, for a source whose own disc
+        // is discPx in radius (0 for a point).
         //
-        // A ray's LENGTH comes from the source, through rsBurstReachPx above: a brighter
-        // light throws its rays further, which is the whole of how a burst reads as bright.
-        // A ray's BRIGHTNESS does not. Scattered light inside an eye is a thin thing spread
-        // over the retina, and against a source that has already saturated whatever is
-        // looking at it, a ray is faint whoever it belongs to: Venus and Sirius differ in the
-        // reach of their rays, not in how hard they glare. So the level is in display units
-        // rather than a fraction of a peak that would saturate them all alike.
-        vec3 rsBurst(vec2 offsetPx, float reachPx)
+        // A needle's LENGTH comes from the source, through rsBurstReachPx above: a brighter
+        // light throws its needles further, which is how a burst reads as bright. Its BRIGHTNESS
+        // does not. Scattered light inside an eye is a thin thing spread over the retina, so the
+        // level is in display units rather than a fraction of a peak that would saturate them
+        // all alike. The pupil's pulse moves both the light through it (its area) and the
+        // speckle's width (one over its diameter), and a widened needle spreads the same light.
+        vec3 rsBurst(vec2 offsetPx, float reachPx, float discPx)
         {
             if (reachPx <= 0.0) return vec3(0.0);
-            vec3 width = rsRayWidthPx * rsRayChroma;
-            vec3 skirt = width * rsRayBlurScale;
-            float cutoff = 4.0 * skirt.b;
+            float time = global.camera.time;
+            float pupil = max(1.0 + rsHippus * rsNoise(time / 2.2, 7.0), 0.5);  // noise(t / p), p = 2.2 mm
+            float sharp = rsNeedleWidthPx / pupil;
+            float spread = rsDiscSpread * discPx;
+            float width = sqrt(sharp * sharp + spread * spread);
+            float skirt = width * rsNeedleSkirtScale;
+            float cutoff = 4.0 * skirt;
+            float level = rsNeedleLevel * rsBurstStrength() * pupil * pupil * sharp / width;
             vec3 total = vec3(0.0);
-            for (int k = 0; k < rsRayCount; k++)
+            for (int k = 0; k < rsNeedleCount; k++)
             {
-                vec4 ray = rsRays[k];
-                // Across the ray first: at four sigma of the widest channel there is nothing
-                // left to add, and with this many rays nearly all of them are dismissed on two
-                // multiplies and a compare.
-                float across = offsetPx.y * ray.x - offsetPx.x * ray.y;
+                vec4 needle = rsNeedles[k];
+                // Across the needle first: with this many, nearly all of them are dismissed on
+                // two multiplies and a compare.
+                float across = offsetPx.y * needle.x - offsetPx.x * needle.y;
                 if (abs(across) > cutoff) continue;
-                float along = dot(offsetPx, ray.xy);
+                float along = dot(offsetPx, needle.xy);
                 if (along <= 0.0) continue;             // one sided, so lengths can differ
-                vec3 taper = max(1.0 - along / max(reachPx * ray.z / rsRayChroma, vec3(1e-3)),
-                                 vec3(0.0));
+                float rate = 0.3 + 1.7 * fract(float(k) * 0.618034);
+                float flicker = max(1.0 + rsNeedleFlicker
+                                        * rsNoise(time * rate + float(k) * 3.7, float(k) + 11.0), 0.0);
                 float a2 = across * across;
-                // Matched at the axis rather than in total, so the channels differ in
-                // shape and not in how much of each there is: white down the middle.
-                vec3 profile = (exp(-0.5 * a2 / (width * width))
-                                + rsRayBlur * exp(-0.5 * a2 / (skirt * skirt)))
-                             / (1.0 + rsRayBlur);
-                total += ray.w * pow(taper, vec3(rsRayTaper)) * profile;
+                float profile = (exp(-0.5 * a2 / (width * width))
+                                 + rsNeedleSkirt * exp(-0.5 * a2 / (skirt * skirt)))
+                              / (1.0 + rsNeedleSkirt);
+                float reach = max(reachPx * needle.z, 1e-3);
+                vec3 colour = vec3(0.0);
+                for (int b = 0; b < rsBandCount; b++)
+                    colour += rsBands[b].rgb
+                            * pow(max(1.0 - along * rsBands[b].w / reach, 0.0), rsNeedleTaper);
+                total += needle.w * flicker * profile * colour;
             }
-            return total * rsRayLevel * rsBurstStrength();
+            return max(total, vec3(0.0)) * level;
         }
 
         // ---- what is in the way ----
@@ -1067,7 +1162,7 @@ internal static class StarShaders
             // and running them through a ceiling meant for a saturating point would only take
             // the colour back out of them. How far they reach was settled in the vertex
             // shader, where the quad was sized to hold them.
-            vec3 burst = rsBurst((inUv - vec2(0.5f)) * 2.0f * inStar.y, inStar.w)
+            vec3 burst = rsBurst((inUv - vec2(0.5f)) * 2.0f * inStar.y, inStar.w, 0.0)
                        * edgeFade * inBurstLevel;
 
             outColor = vec4(inColor.rgb * (vec3(min(intensity, cap)) + burst), 1.0f);
@@ -1231,7 +1326,7 @@ internal static class StarShaders
             intensity *= edgeFade;
             // The same rays, from the same eye, as the stars get - and beside the core for the
             // same reason.
-            vec3 burst = rsBurst((inUV - vec2(0.5f)) * 2.0f * quadPx, inBurstPx)
+            vec3 burst = rsBurst((inUV - vec2(0.5f)) * 2.0f * quadPx, inBurstPx, 0.0)
                        * edgeFade * inBurstLevel;
 
             // The engine has already scaled this colour by its own phase term. Ours is in the

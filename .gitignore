@@ -9,3 +9,9 @@ StarMapConfig.json
 # Catalogue sources and built binaries are deliberately not in the repository: they are
 # large, and the shipped star binary is generated rather than authored. See release-files.txt.
 assets/
+
+# Glare model outputs (glare_sim.py, glare_fit.py)
+glare_ref.npz
+glare_ref.png
+needles.npz
+needles.glsl
