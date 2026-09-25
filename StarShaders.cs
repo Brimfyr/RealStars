@@ -33,7 +33,8 @@ internal static class StarShaders
     /// the raymarch we edit, not because we change Sun.frag itself.
     /// </summary>
     public static readonly string[] Redirected =
-        { "Sun/Sun.frag", "PostProcess/sunbloom.frag", "PostProcess/sunbloom_merge.comp" };
+        { "Sun/Sun.frag", "PostProcess/sunbloom.frag", "PostProcess/sunbloom_merge.comp",
+          "PostProcess/kawase_downsample.comp", "PostProcess/kawase_downsample_with_thresholds.comp" };
 
     /// <summary>
     /// Shaders we change a line of rather than replace. The Sun's surface is a raymarch of
@@ -155,7 +156,101 @@ internal static class StarShaders
         ("PostProcess/sunbloom.frag",
          "    float sunPower = innerSun * innerSunScalar + outerSun * sunData.outerSunColorScalar;",
          "    float sunPower = 0.;  // Real Stars: the Sun is drawn as the star it is"),
+
+        // The engine's two blooms - Global Bloom and Threshold Bloom in the settings - each start
+        // with one of these downsamples, and the Sun reached both at 24, burying its needles in
+        // a white blob. Each tap now passes BloomSun's rsBloomTap first. The plain downsample is
+        // also every later level of both pyramids, where the Sun is already capped and this
+        // does nothing. One anchor per file, from the signature through the taps, so an update
+        // that changes any of it leaves the file stock rather than half patched.
+        ("PostProcess/kawase_downsample.comp",
+           "vec3 dualDownSample(vec2 uv, vec2 halfpixel)\n"
+         + "{\n"
+         + "    // a   b  -- corners of the pixel + 4 times the pixel\n"
+         + "    // c   d\n"
+         + "    vec3 downsample = textureLod(srcTexture, uv, 0.0).rgb * 4.0;\n"
+         + "    downsample += textureLod(srcTexture, uv  - halfpixel, 0.0).rgb;\n"
+         + "    downsample += textureLod(srcTexture, uv  + halfpixel, 0.0).rgb;\n"
+         + "    downsample += textureLod(srcTexture, uv - vec2(halfpixel.x, - halfpixel.y), 0.0).rgb;\n"
+         + "    downsample += textureLod(srcTexture, uv + vec2(halfpixel.x, - halfpixel.y), 0.0).rgb;",
+           BloomSun
+         + "vec3 dualDownSample(vec2 uv, vec2 halfpixel)\n"
+         + "{\n"
+         + "    // Real Stars: each tap as the bloom may see it - see rsBloomTap.\n"
+         + "    vec3 rsSun = rsBloomSun();\n"
+         + "    vec2 rsFlip = vec2(halfpixel.x, -halfpixel.y);\n"
+         + "    vec3 downsample = rsBloomTap(textureLod(srcTexture, uv, 0.0).rgb * 4.0, uv, 4.0, rsSun);\n"
+         + "    downsample += rsBloomTap(textureLod(srcTexture, uv - halfpixel, 0.0).rgb, uv - halfpixel, 1.0, rsSun);\n"
+         + "    downsample += rsBloomTap(textureLod(srcTexture, uv + halfpixel, 0.0).rgb, uv + halfpixel, 1.0, rsSun);\n"
+         + "    downsample += rsBloomTap(textureLod(srcTexture, uv - rsFlip, 0.0).rgb, uv - rsFlip, 1.0, rsSun);\n"
+         + "    downsample += rsBloomTap(textureLod(srcTexture, uv + rsFlip, 0.0).rgb, uv + rsFlip, 1.0, rsSun);"),
+        ("PostProcess/kawase_downsample_with_thresholds.comp",
+           "vec3 dualDownSample(vec2 uv, vec2 halfpixel)\n"
+         + "{\n"
+         + "    // a   b  -- corners of the pixel + 4 times the pixel\n"
+         + "    //   e\n"
+         + "    // c   d\n"
+         + "    vec3 e = textureLod(srcTexture, uv, 0.0).rgb * 4.0;\n"
+         + "    vec3 a = textureLod(srcTexture, uv - vec2(halfpixel.x, - halfpixel.y), 0.0).rgb;\n"
+         + "    vec3 b = textureLod(srcTexture, uv  + halfpixel, 0.0).rgb;\n"
+         + "    vec3 c = textureLod(srcTexture, uv  - halfpixel, 0.0).rgb;\n"
+         + "    vec3 d = textureLod(srcTexture, uv + vec2(halfpixel.x, - halfpixel.y), 0.0).rgb;",
+           BloomSun
+         + "vec3 dualDownSample(vec2 uv, vec2 halfpixel)\n"
+         + "{\n"
+         + "    // Real Stars: each tap as the bloom may see it, before the threshold - see rsBloomTap.\n"
+         + "    vec3 rsSun = rsBloomSun();\n"
+         + "    vec2 rsFlip = vec2(halfpixel.x, -halfpixel.y);\n"
+         + "    vec3 e = rsBloomTap(textureLod(srcTexture, uv, 0.0).rgb * 4.0, uv, 4.0, rsSun);\n"
+         + "    vec3 a = rsBloomTap(textureLod(srcTexture, uv - rsFlip, 0.0).rgb, uv - rsFlip, 1.0, rsSun);\n"
+         + "    vec3 b = rsBloomTap(textureLod(srcTexture, uv + halfpixel, 0.0).rgb, uv + halfpixel, 1.0, rsSun);\n"
+         + "    vec3 c = rsBloomTap(textureLod(srcTexture, uv - halfpixel, 0.0).rgb, uv - halfpixel, 1.0, rsSun);\n"
+         + "    vec3 d = rsBloomTap(textureLod(srcTexture, uv + rsFlip, 0.0).rgb, uv + rsFlip, 1.0, rsSun);"),
     };
+
+    /// <summary>
+    /// What the engine's two blooms may see of the Sun, written into their downsamples. Past
+    /// white a core shows only through the blooms (see rsBloomWhite), and the Sun's glare is
+    /// already ours. The Sun is the one source these passes can find: its place and size are in
+    /// the global block, which every compute pass is bound to, read as the merge pass reads
+    /// them. Stars and planets hold their own cores to the same level, in their own shaders.
+    /// </summary>
+    private const string BloomSun = $$"""
+        // ---- Real Stars ----
+        #include "../Common/Shared.glsl"
+        #include "../Common/Camera.glsl"
+        {{Tuning}}
+
+        // The Sun's white, as the merge pass finds it: its centre as uv, and its radius in screen
+        // pixels - the disc, the ring its profile holds over rsBloomWhite past the limb, and two
+        // pixels for a tap's footprint. A radius of zero when it is behind the camera.
+        vec3 rsBloomSun()
+        {
+            vec3 sunEgo = global.lighting.sunPosition.xyz;
+            float dist = length(sunEgo);
+            vec4 clip = global.camera.viewProjection * vec4(sunEgo, 1.0);
+            if (dist <= 0.0 || clip.w <= 0.0) return vec3(0.0);
+            float mag = rsSunAbsMag + 5.0 * log(dist / (10.0 * rsParsecMetres)) * 0.4342944819;
+            float peak = pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef))
+                       * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
+            float discPx = max(intBitsToFloat(global.lighting.lpPad1), 0.0);
+            float whitePx = rsPsfCore * sqrt(max(pow(max(peak / rsBloomWhite, 1.0),
+                                                     1.0 / rsPsfBeta) - 1.0, 0.0));
+            return vec3(clip.xy / clip.w * 0.5 + 0.5, discPx + whitePx + 2.0);
+        }
+
+        // One tap of a downsample, carrying `weight` samples, as the bloom may see it: inside the
+        // Sun's white, no brighter than rsBloomWhite. What is drawn is untouched.
+        vec3 rsBloomTap(vec3 tap, vec2 uv, float weight, vec3 sun)
+        {
+            vec2 px = (uv - sun.xy) * vec2(global.camera.screenWidth, global.camera.screenHeight);
+            if (dot(px, px) >= sun.z * sun.z) return tap;
+            float luma = dot(tap, vec3(0.2126, 0.7152, 0.0722));
+            float limit = rsBloomWhite * weight;
+            return luma > limit ? tap * (limit / luma) : tap;
+        }
+
+        """;
 
     // ---------------------------------------------------------------------------------
     // Why any of this changes:
@@ -183,12 +278,12 @@ internal static class StarShaders
     /// rsMagFaint and rsBytesPerMag MUST match make_star_binary.py, which writes the byte.
     /// </remarks>
     /// <summary>
-    /// The brightest value any of our sprites writes, and now the value the Sun's sphere is
-    /// drawn at too. A bright star's core genuinely does saturate a fixed exposure, so this is
-    /// a limit rather than a look; it keeps one star out of the range where the engine's bloom
-    /// would smear it across the frame. The Sun's own profile is far past it at every distance
-    /// the sphere is on screen, so the sphere matching it is what makes the two interchangeable.
-    /// Turn it down if the Sun blooms too hard - it binds on nothing else in the catalogue.
+    /// The brightest value any of our sprites writes, and the value the Sun's sphere is drawn
+    /// at too. The Sun's own profile is far past it at every distance the sphere is on screen,
+    /// so the sphere matching it is what makes the two interchangeable. The default tonemap is
+    /// white from about 1.2, so what the rest buys is headroom for the air: the engine dims the
+    /// sky by its transmittance after we draw, and this is what keeps a low Sun white. The
+    /// engine's blooms see none of it - see rsBloomWhite and BloomSun.
     /// </summary>
     public const string MaxOutput = "24.0";
 
@@ -240,7 +335,6 @@ internal static class StarShaders
         // ---- Real Stars ----
         {{Tuning}}
         const float rsMaxOutput = {{MaxOutput}};
-        const float rsSunAbsMag = 4.83;            // what the catalogue carries for the Sun
 
         // Where the Sun is, and what of it is left to see, from the finished frame.
         //
@@ -333,6 +427,7 @@ internal static class StarShaders
         const float rsMagFaint = 16.5;
         const float rsBytesPerMag = 10.0;
         const float rsParsecMetres = 3.0856775814913673e16;
+        const float rsSunAbsMag = 4.83;        // what the catalogue carries for the Sun
         const float rsStarShell = 19.5;        // the radius the sky is drawn on, as stock does
         // The magnitude that peaks at 1.0 on screen. Lower makes the whole sky brighter.
         // At 5.0 a naked-eye star of magnitude 6 sits at 0.4, faint but present.
@@ -355,6 +450,13 @@ internal static class StarShaders
         const float rsBrightness = 0.886;
         // One display level out of 8-bit, the level below which a wing cannot show.
         const float rsDisplayLevels = 255.0;
+        // The most the engine's blooms may see of any of our sources. Past about 1.2 the default
+        // tonemap is already white (Hable at exposure 1.25), so whatever a core writes above that
+        // shows only through the blooms: the threshold bloom adds a third of everything over 3
+        // back as a wide glow, and the global bloom mixes a tenth of a blur into the image. Both
+        // drew a second glare around sources that carry their own. 1.5 is still white after the
+        // global bloom takes its tenth, and half the threshold.
+        const float rsBloomWhite = 1.5;
         // Largest glow a point source may draw, in pixels of radius. The radius grows as the
         // fourth root of flux, which behaves across a real sky - Sirius is 18 px, Venus at its
         // best 40 - but a planet seen from a few million kilometres reaches magnitude -10 and
@@ -869,6 +971,8 @@ internal static class StarShaders
         layout (location = 2) out vec4 outStar;
         // The glare's level at the source: see rsGlareLevel.
         layout (location = 3) out float outGlareLevel;
+        // The most the core writes: see where it is worked out.
+        layout (location = 4) out float outCeiling;
 
         {{Tuning}}
         const float rsMinGlowPx = 1.5;            // a faint star must still cover a pixel
@@ -962,6 +1066,14 @@ internal static class StarShaders
                 seen *= 1.0 - clamp(intBitsToFloat(global.celestial.pad2), 0.0, 1.0);
             flux *= seen;
 
+            // The most the core writes. Past white the screen shows nothing more, only the
+            // engine's blooms do, and they drew a second glare around what already has one - see
+            // rsBloomWhite. The engine dims the sky by its air after we draw, so the air this
+            // star is seen through divides the level, which keeps a low star white; it never
+            // rises past the old ceiling. The Sun keeps its own level: BloomSun deals with it.
+            outCeiling = min({{MaxOutput}},
+                rsBloomWhite / max(rsAirVisibility(starDir, distancePc * rsParsecMetres), 1e-6));
+
             // Moffat beta = 2 at unit energy peaks at 1/(pi*core^2), so the profile crosses
             // one display level at this radius. Sizing the quad to it means the sprite is
             // exactly the star's visible extent and never a disc with a hard edge.
@@ -1026,12 +1138,11 @@ internal static class StarShaders
         layout (location = 1) in vec2 inUv;
         layout (location = 2) in vec4 inStar;     // flux, sprite px, disc px, glare reach px
         layout (location = 3) in float inGlareLevel; // the glare's level at the source
+        layout (location = 4) in float inCeiling;    // the most the core writes
 
         layout (location = 0) out vec4 outColor;
 
         {{Tuning}}
-        // HDR headroom, shared with the Sun's sphere. See StarShaders.MaxOutput.
-        const float rsMaxOutput = {{MaxOutput}};
 
         void main(void)
         {
@@ -1057,8 +1168,8 @@ internal static class StarShaders
 
             // The Sun gives brightness back as it fills the frame - see SunExposureKnee.
             // inStar.z is the disc radius, and is zero for everything else in the catalogue,
-            // so every other star keeps the plain ceiling.
-            float cap = inStar.z > 0.0 ? {{SunLevelGlsl}} : rsMaxOutput;
+            // so every other star keeps the ceiling the vertex shader gave it.
+            float cap = inStar.z > 0.0 ? {{SunLevelGlsl}} : inCeiling;
 
             // The glare goes beside the core rather than into it: it has its own ceiling, and
             // running it through one meant for a saturating point would only take the colour
@@ -1112,6 +1223,7 @@ internal static class StarShaders
         layout (location = 4) out flat float outSpritePx;
         layout (location = 5) out flat float outBurstPx;
         layout (location = 6) out flat float outGlareLevel; // see rsGlareLevel
+        layout (location = 7) out flat float outCeiling;    // the most the core writes
 
         {{Tuning}}
 
@@ -1148,6 +1260,10 @@ internal static class StarShaders
             float dist = length(instanceData.positionEgo);
             float seen = rsVisibility(instanceData.positionEgo / max(dist, 1.0f), dist, 0.0f);
             peak *= seen;
+            // The most the core writes, as the star shader works it out: white for the screen,
+            // under the engine's bloom, divided by the air the engine will dim it by.
+            outCeiling = min({{MaxOutput}},
+                rsBloomWhite / max(rsAirVisibility(instanceData.positionEgo / max(dist, 1.0f), dist), 1e-6f));
             glowPx = rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels, 1.0f / rsPsfBeta) - 1.0f, 0.0f));
 
             // Venus and Jupiter clear the glare's floor, Neptune does not. The quad takes
@@ -1205,11 +1321,11 @@ internal static class StarShaders
         layout (location = 4) in flat float inSpritePx;
         layout (location = 5) in flat float inBurstPx;
         layout (location = 6) in flat float inGlareLevel;
+        layout (location = 7) in flat float inCeiling;
 
         layout (location = 0) out vec4 outColor;
 
         {{Tuning}}
-        const float rsMaxOutput = {{MaxOutput}};
 
         void main(void)
         {
@@ -1242,7 +1358,7 @@ internal static class StarShaders
             // The core is clamped, the rays are not - they are already faint, and a ceiling
             // meant for a saturating point would only take the colour back out of them. Alpha
             // follows the brightest channel, so a ray blends in rather than being dropped.
-            float brightness = min(intensity, rsMaxOutput);
+            float brightness = min(intensity, inCeiling);
             vec3 rgb = tint * (vec3(brightness) + burst);
             outColor = vec4(rgb, min(max(max(rgb.r, rgb.g), rgb.b), 1.0f));
 
