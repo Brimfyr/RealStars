@@ -251,11 +251,8 @@ internal static class StarShaders
         // something drawn nearer than the Sun is the share hidden. The Sun's own sphere writes
         // no depth, so it cannot hide itself. Air writes none either, so the haze keeps its term.
         //
-        // What is left sets the rays' BRIGHTNESS, linearly: the scatter that makes them is a
-        // fixed share of the light that gets in, so a sliver of Sun throws a sliver of burst.
-        // Their reach was the only thing that fell before, and it falls by magnitude - ninety
-        // five percent covered is still seven magnitudes past the burst line - which is why the
-        // rays outlived the Sun behind a hull and through Titan's haze.
+        // What is left dims the glare the way distance does: it is less light getting in, and
+        // the glare's level follows the light by one law, rsGlareLevel.
         vec3 rsSunBurst(vec2 pixel, ivec2 dim)
         {
             if (rsBurstStrength() <= 0.0) return vec3(0.0);
@@ -268,14 +265,14 @@ internal static class StarShaders
             vec2 ndc = clip.xy / clip.w;
             vec2 sunPx = (ndc * 0.5 + 0.5) * vec2(dim);
 
-            // The whole Sun, before anything is in the way, and how far its rays could reach.
+            // The whole Sun, before anything is in the way, and how far its glare could reach.
             float mag = rsSunAbsMag + 5.0 * log(dist / (10.0 * rsParsecMetres)) * 0.4342944819;
             float peak = pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef))
                        * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
-            float reach = rsBurstReachPx(peak);
+            float discPx = max(intBitsToFloat(global.lighting.lpPad1), 0.0);
+            float reach = rsGlareReachPx(rsGlareLevel(peak), discPx);
             vec2 offset = pixel - sunPx;
-            float skirt = reach + 8.0;                              // and the blur beside a ray
-            if (reach <= 0.0 || dot(offset, offset) > skirt * skirt) return vec3(0.0);
+            if (reach <= 0.0 || dot(offset, offset) > reach * reach) return vec3(0.0);
 
             // Off the frame, nothing entered.
             vec2 pastEdge = 0.5 * vec2(dim) * (abs(ndc) - vec2(1.0));
@@ -283,7 +280,6 @@ internal static class StarShaders
             if (framed <= 0.0) return vec3(0.0);
 
             // What is in front of it, from the depth buffer, across the Sun as it looks.
-            float discPx = max(intBitsToFloat(global.lighting.lpPad1), 0.0);
             float whitePx = rsPsfCore * sqrt(max(pow(max(peak / rsMaxOutput, 1.0),
                                                      1.0 / rsPsfBeta) - 1.0, 0.0));
             float looksPx = discPx + whitePx;
@@ -323,7 +319,8 @@ internal static class StarShaders
 
             vec3 light = global.lighting.sunColor.rgb;
             vec3 tint = light / max(max(light.r, light.g), max(light.b, 1e-6));
-            return tint * rsBurst(offset, rsBurstReachPx(peak * seen) * framed, discPx) * seen;
+            float level = rsGlareLevel(peak * seen * framed);
+            return tint * rsGlare(offset, rsGlareReachPx(level, discPx), discPx, level);
         }
         """;
 
@@ -503,14 +500,20 @@ internal static class StarShaders
         // ciliary corona. glare_sim.py runs that model (a 2.2 mm pupil, as an eye looking at the
         // Sun has, 870 particles, a 4096-sample aperture and 32 wavelengths).
         //
-        // What it shows is not a few rays but a fan of about a thousand. Every direction is a
-        // lane of summed speckle, one diffraction spot (about a pixel) wide, so near the source
-        // the lanes overlap into a glow and only further out do they part into needles. That is
-        // what is drawn: rsLaneCount lanes evenly spaced in angle, each with a hashed jitter,
-        // strength and length, so a pixel only visits the lanes beside its own direction. A
-        // strength is a sum of speckle, so it is gamma-distributed, and a lane's length follows
-        // from it because the glow falls as r^-2.8. The fall along a needle is gentler than that,
-        // matched by eye to the simulation drawn at 40 pixels a degree.
+        // What it shows is a glow, falling as r^-2.8, whose texture is a fan of about a thousand
+        // needles. Every direction is a lane of summed speckle, one diffraction spot (about a
+        // pixel) wide, so near the source the lanes overlap into the glow and further out they
+        // part into needles. That is what is drawn: rsLaneCount lanes evenly spaced in angle,
+        // each with a hashed jitter and strength, so a pixel only visits the lanes beside its own
+        // direction. A strength is a sum of speckle, so it is gamma-distributed.
+        //
+        // It is one point spread function for every source, the core above plus this, and only
+        // the level differs. Nothing is decided per source: no magnitude line, no reach per
+        // magnitude. A glare is seen where it clears a floor, the level the eye is adapted to,
+        // and each lane carries its share of the glow, so each needle ends where its own share
+        // sinks to the floor. Strong lanes end further out, and a brighter source clears the
+        // floor further out, so its needles are longer. A faint star's glow is under the floor
+        // everywhere, and it is a point.
         //
         // The pattern belongs to whoever is looking, not to what is being looked at: every light
         // in the frame shows the same needles, fixed in the screen.
@@ -520,34 +523,32 @@ internal static class StarShaders
         // about 4 mm: a dark-adapted eye at a streetlamp. Looking at the Sun the pupil is near
         // 2 mm, and nothing else in the sky is bright enough to show one.
         const int rsLaneCount = 1024;          // lanes around the source
-        const int rsLaneWindow = 48;           // most lanes a pixel visits either side of its own
+        const int rsLaneWindow = 24;           // most lanes a pixel visits either side of its own
         const float rsNeedleWidthPx = 0.42;    // across a needle: the speckle, about an arcminute
-        const float rsNeedleLevel = 0.035;     // display units, at the base of a mean lane
-        const float rsNeedleTaper = 1.0;       // the fall to a needle's tip, as (1 - r/length)^this
-        const float rsNeedleGamma = 0.7;       // and the glow's fall along it, as (c/(r + c))^this
-        const float rsNeedleCore = 0.12;       // c, as a fraction of the needle's length
-        //
-        // Where rays begin at all. The scatter that makes them is always there, but it is a
-        // thin thing spread over the retina and it only lifts out of the noise for a source
-        // that is overwhelmingly brighter than everything around it. That is why the Sun
-        // bursts and Sirius does not, and why a sky of stars should read as points: an eye
-        // adapted to the night sees Vega as a point, and the same eye in daylight cannot see
-        // Vega at all. Below magnitude -3 nothing in the sky qualifies except Venus, which is
-        // about where a burst stops being reported by anyone looking up.
-        //
-        // The engine has no adaptation, so this stands in for the part of it that matters
-        // here: a fixed line, past which rays grow with how far past it a source is.
-        const float rsBurstMag = -3.0;
-        const float rsRayPxPerMag = 12.0;   // of reach, for each magnitude past that line
-        const float rsMaxRayPx = 140.0;     // the Sun alone comes near this
+        // The glow. Its fall is glare_sim.py's, and the CIE's glare formula falls the same way
+        // over the same angles. It starts at the limb, as the core does.
+        const float rsGlareFall = 2.8;         // the glow falls as r^-this
+        const float rsGlareCorePx = 1.5;       // and flattens inside this
+        // Its level at the source goes as peak^kappa. At kappa = 1 the glare would be a fixed
+        // share of the light, and the Sun's would fill the screen whenever Venus's showed at
+        // all. The eye adapts to what it looks at, so its floor rises with the source; at the
+        // de Vries-Rose end of adaptation that is peak^0.5. Set between the two, by eye.
+        const float rsGlareScatter = 0.008;    // the level for a peak of 1
+        const float rsGlareKappa = 0.62;
+        const float rsGlareFloor = 0.004;      // what the glow must clear to be seen
+        const float rsGlareCeiling = 0.25;     // the most the glow adds, however bright
+        // A glare shorter than this lies under its own source's core, so it is not drawn, and
+        // fades in over the next as much again: it is the bright stars' twinkle that crosses it.
+        const float rsGlareMinPx = 3.0;
+        const float rsMaxRayPx = 180.0;        // the Sun alone comes near this
         // How sharply a burst leaves when its source leaves the frame. Over its own reach is
         // far too slow: a hundred and forty pixels of fade is a hundred and forty pixels of
         // rays still streaming in from a source that went several frames ago.
         const float rsBurstEdgePx = 10.0;
 
         // Colour, the paper's way. The pattern at wavelength lambda is the 575 nm one scaled by
-        // lambda/575, so a needle's red runs further than its blue and it ends warm, while the
-        // burst as a whole stays the colour of whatever threw it. Six bands of the CIE 1931
+        // lambda/575, so the glow's red runs further than its blue and a needle ends warm, while
+        // the core of the glare stays the colour of whatever threw it. Six bands of the CIE 1931
         // observer in linear sRGB, summing to white: xyz is a band's weight, w is 575/lambda at
         // its middle. The negative weights are sRGB's gamut, clamped where the colour is summed.
         const int rsBandCount = 6;
@@ -585,17 +586,25 @@ internal static class StarShaders
             return max(intBitsToFloat(global.camera.pad0), 0.0);
         }
 
-        // How far the burst reaches: nothing at all until a source is past rsBurstMag, then
-        // so many pixels for every magnitude beyond it. Zero means no burst, and no quad grown
-        // to hold one, which is what the whole catalogue gets bar the Sun.
-        float rsBurstReachPx(float peak)
+        // The glow's level at the source, from the peak its core would reach unclamped. Whatever
+        // dims the source - distance, a limb, the edge of the frame - goes into the peak, so the
+        // glare follows it by the same law.
+        float rsGlareLevel(float peak)
         {
-            // The peak a source on the line reaches, worked out from the same profile as
-            // everything else so the two cannot drift apart.
-            float onTheLine = pow(10.0, -0.4 * (rsBurstMag - rsMagRef))
-                            * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
-            float mags = 2.5 * log(max(peak, 1e-9) / onTheLine) * 0.4342944819;
-            return clamp(mags * rsRayPxPerMag * rsBurstStrength(), 0.0, rsMaxRayPx);
+            return rsGlareScatter * pow(max(peak, 0.0), rsGlareKappa) * rsBurstStrength();
+        }
+
+        // How far the glare reaches: where a strong lane, three times the mean, sinks to the
+        // floor, in the reddest band, which reads the pattern furthest out. From the limb, and
+        // capped from the centre. Zero means no glare, and no quad grown to hold one.
+        float rsGlareReachPx(float level, float discPx)
+        {
+            float excess = 3.0 * level / rsGlareFloor;
+            if (excess <= 1.0) return 0.0;
+            float limb = rsGlareCorePx * sqrt(pow(excess, 2.0 / rsGlareFall) - 1.0)
+                       / rsBands[rsBandCount - 1].w;
+            float reach = min(discPx + limb, rsMaxRayPx);
+            return reach - discPx < rsGlareMinPx ? 0.0 : reach;
         }
 
         // One lane's random numbers, in [0, 1).
@@ -604,26 +613,28 @@ internal static class StarShaders
             return rsHash(vec3(float(k), salt, 17.0));
         }
 
-        // The burst at an offset from the source, in screen pixels, for a source whose own disc
-        // is discPx in radius (0 for a point).
-        //
-        // A needle's LENGTH comes from the source, through rsBurstReachPx above: a brighter
-        // light throws its needles further, which is how a burst reads as bright. Its BRIGHTNESS
-        // does not. Scattered light inside an eye is a thin thing spread over the retina, so the
-        // level is in display units rather than a fraction of a peak that would saturate them
-        // all alike. A needle widened by its source's disc spreads the same light, so it dims
-        // as it widens.
-        vec3 rsBurst(vec2 offsetPx, float reachPx, float discPx)
+        // Abramowitz and Stegun 7.1.26, good to 1.5e-7.
+        float rsErf(float x)
+        {
+            float t = 1.0 / (1.0 + 0.3275911 * abs(x));
+            float y = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t
+                        - 0.284496736) * t + 0.254829592) * t;
+            return sign(x) * (1.0 - y * exp(-x * x));
+        }
+
+        // The glare at an offset from the source, in screen pixels, for a source whose own disc
+        // is discPx in radius (0 for a point), at the level rsGlareLevel gave and the reach
+        // rsGlareReachPx made of it.
+        vec3 rsGlare(vec2 offsetPx, float reachPx, float discPx, float level)
         {
             float r = length(offsetPx);
-            if (reachPx <= 0.0 || r <= 0.0) return vec3(0.0);
+            if (reachPx <= 0.0 || level <= 0.0 || r <= 0.0 || r >= reachPx) return vec3(0.0);
             float sharp = rsNeedleWidthPx;
             float spread = rsDiscSpread * discPx;
             float width = sqrt(sharp * sharp + spread * spread);
             // The skirt is a sharp needle's. Once the disc has blurred a needle wider there is
             // nothing left for it to add, and it would triple the lanes each pixel visits.
             float skirt = max(sharp * rsNeedleSkirtScale, width);
-            float level = rsNeedleLevel * rsBurstStrength() * sharp / width;
 
             const float tau = 6.28318531;
             float spacing = tau / float(rsLaneCount);
@@ -631,6 +642,26 @@ internal static class StarShaders
             if (theta < 0.0) theta += tau;
             int centre = int(floor(theta / spacing));
             int span = min(int(ceil(4.0 * skirt / (r * spacing))), rsLaneWindow);
+
+            // Each band's glow here, under the ceiling. A band reads the 575 nm glow at
+            // radius * 575/lambda, like everything else.
+            float glow[rsBandCount];
+            float fromLimb = max(r - discPx, 0.0);
+            for (int b = 0; b < rsBandCount; b++)
+            {
+                float x = fromLimb * rsBands[b].w / rsGlareCorePx;
+                float g = level * pow(1.0 + x * x, -0.5 * rsGlareFall);
+                glow[b] = rsGlareCeiling * (1.0 - exp(-g / rsGlareCeiling));
+            }
+
+            // One lane's share of the glow: the lanes' spacing here over a lane's area, so they
+            // average to the glow. Close in, where the window holds only part of a lane's
+            // profile, the part it holds.
+            float held = (float(span) + 0.5) * spacing * r * 0.70710678;
+            float area = 2.50662827 * (width * rsErf(held / width)
+                                       + rsNeedleSkirt * skirt * rsErf(held / skirt))
+                       / (1.0 + rsNeedleSkirt);
+            float share = r * spacing / max(area, 1e-6);
 
             vec3 total = vec3(0.0);
             for (int dk = -span; dk <= span; dk++)
@@ -644,9 +675,6 @@ internal static class StarShaders
                 float strength = -(log(max(1.0 - rsLane(k, 5.0), 1e-6))
                                    + log(max(1.0 - rsLane(k, 6.0), 1e-6))
                                    + log(max(1.0 - rsLane(k, 7.0), 1e-6))) / 3.0;
-                // Visible until strength * r^-2.8 falls away, so length ~ strength^(1/2.8), a
-                // strong lane (three times the mean) running the burst's full reach.
-                float reach = reachPx * clamp(pow(strength / 3.0, 1.0 / 2.8), 0.25, 1.0);
                 float a2 = across * across;
                 float profile = (exp(-0.5 * a2 / (width * width))
                                  + rsNeedleSkirt * exp(-0.5 * a2 / (skirt * skirt)))
@@ -654,16 +682,17 @@ internal static class StarShaders
                 vec3 colour = vec3(0.0);
                 for (int b = 0; b < rsBandCount; b++)
                 {
-                    float at = along * rsBands[b].w;    // where this band reads the 575 nm pattern
-                    float u = at / reach;
-                    float fall = pow(max(1.0 - u, 0.0), rsNeedleTaper)
-                               * pow(rsNeedleCore / (u + rsNeedleCore), rsNeedleGamma);
-                    float spot = 1.0 + rsSpeckle * rsFlicker(at / rsSpecklePx, float(k) + 23.0);
-                    colour += rsBands[b].rgb * fall * spot;
+                    float spot = 1.0 + rsSpeckle * rsFlicker(along * rsBands[b].w / rsSpecklePx,
+                                                             float(k) + 23.0);
+                    colour += rsBands[b].rgb * max(glow[b] * strength * spot - rsGlareFloor, 0.0);
                 }
-                total += strength * profile * colour;
+                total += profile * colour;
             }
-            return max(total, vec3(0.0)) * level;
+            // Taken to nothing over the last fifth of the reach, where only the strongest lanes
+            // are left, and faded in over the shortest glares.
+            float fade = clamp((reachPx - r) / (0.2 * reachPx), 0.0, 1.0)
+                       * smoothstep(rsGlareMinPx, 2.0 * rsGlareMinPx, reachPx - discPx);
+            return max(total, vec3(0.0)) * share * fade;
         }
 
         // ---- what is in the way ----
@@ -836,12 +865,10 @@ internal static class StarShaders
         layout (location = 1) out vec2 outUv;
         // x = flux, y = sprite radius in px, z = the source's own disc radius in px (0 for a
         // point source, which is everything except the Sun seen from close by), w = how far the
-        // starburst reaches, also in px, and zero when there is not one
+        // glare reaches, also in px, and zero when there is none
         layout (location = 2) out vec4 outStar;
-        // How much of the source is left to see. The rays are scatter of the light that gets
-        // in, so their brightness goes with it; their reach alone falls by magnitude, far too
-        // slowly, and they outlived the source.
-        layout (location = 3) out float outBurstLevel;
+        // The glare's level at the source: see rsGlareLevel.
+        layout (location = 3) out float outGlareLevel;
 
         {{Tuning}}
         const float rsMinGlowPx = 1.5;            // a faint star must still cover a pixel
@@ -947,11 +974,12 @@ internal static class StarShaders
             // the limb rather than at the centre. As the disc falls below a pixel this becomes
             // an ordinary point source on its own, with no threshold to cross - which is what
             // stops the Sun snapping to a smaller size when the sphere stops being drawn.
-            // The burst is sized by the same rule and reaches further than the halo for
-            // anything bright enough to have one, so the quad takes whichever wins.
-            // The Sun's burst is not drawn here at all: it goes over the finished image, in the
+            // The glare comes from the same peak and reaches further than the halo for anything
+            // bright enough to show one, so the quad takes whichever wins.
+            // The Sun's glare is not drawn here at all: it goes over the finished image, in the
             // merge pass, because it is an optic effect and belongs on top of the world.
-            float burstPx = discPx > 0.0 ? 0.0 : rsBurstReachPx(peak);
+            float glareLevel = discPx > 0.0 ? 0.0 : rsGlareLevel(peak);
+            float burstPx = rsGlareReachPx(glareLevel, 0.0);
 
             // Drawn on the same shell the game uses, but along the direction just computed.
             vec4 worldPosition = global.camera.viewProjection * vec4(starDir * rsStarShell, 1);
@@ -964,17 +992,18 @@ internal static class StarShaders
             vec2 pastEdge = 0.5 * vec2(global.camera.screenWidth, global.camera.screenHeight)
                           * (abs(ndc) - vec2(1.0));
 
-            // The quad keeps the size the UNFADED burst asked for, so that the halo - which is
+            // The quad keeps the size the UNFADED glare asked for, so that the halo - which is
             // taken to nothing over the last fraction of the quad - renders the same whatever
-            // the rays are doing. Tying the two together made the glare change as the burst
-            // went, which is not a thing the glare should know about.
+            // the glare is doing. Tying the two together made the halo change as the glare
+            // went, which is not a thing the halo should know about.
             float spritePx = discPx + max(glowPx, burstPx);
-            burstPx *= 1.0 - smoothstep(-rsBurstEdgePx, rsBurstEdgePx,
-                                        max(pastEdge.x, pastEdge.y));
+            glareLevel *= 1.0 - smoothstep(-rsBurstEdgePx, rsBurstEdgePx,
+                                           max(pastEdge.x, pastEdge.y));
+            burstPx = rsGlareReachPx(glareLevel, 0.0);
 
             outUv = uv[gl_VertexIndex];
             outStar = vec4(flux, spritePx, discPx, burstPx);
-            outBurstLevel = seen;
+            outGlareLevel = glareLevel;
 
             // Pixels to clip units. The offset is added in clip space, so it is divided by w
             // downstream, and x spans the screen width over 2 NDC units; the aspect factor on
@@ -995,8 +1024,8 @@ internal static class StarShaders
 
         layout (location = 0) in vec3 inColor;
         layout (location = 1) in vec2 inUv;
-        layout (location = 2) in vec4 inStar;     // flux, sprite px, disc px, burst reach px
-        layout (location = 3) in float inBurstLevel; // how much of the source is left to see
+        layout (location = 2) in vec4 inStar;     // flux, sprite px, disc px, glare reach px
+        layout (location = 3) in float inGlareLevel; // the glare's level at the source
 
         layout (location = 0) out vec4 outColor;
 
@@ -1031,12 +1060,12 @@ internal static class StarShaders
             // so every other star keeps the plain ceiling.
             float cap = inStar.z > 0.0 ? {{SunLevelGlsl}} : rsMaxOutput;
 
-            // The rays go beside the core rather than into it: they are faint by construction,
-            // and running them through a ceiling meant for a saturating point would only take
-            // the colour back out of them. How far they reach was settled in the vertex
-            // shader, where the quad was sized to hold them.
-            vec3 burst = rsBurst((inUv - vec2(0.5f)) * 2.0f * inStar.y, inStar.w, 0.0)
-                       * edgeFade * inBurstLevel;
+            // The glare goes beside the core rather than into it: it has its own ceiling, and
+            // running it through one meant for a saturating point would only take the colour
+            // back out of it. How far it reaches was settled in the vertex shader, where the
+            // quad was sized to hold it.
+            vec3 burst = rsGlare((inUv - vec2(0.5f)) * 2.0f * inStar.y, inStar.w, 0.0, inGlareLevel)
+                       * edgeFade;
 
             outColor = vec4(inColor.rgb * (vec3(min(intensity, cap)) + burst), 1.0f);
         }
@@ -1078,11 +1107,11 @@ internal static class StarShaders
         layout (location = 1) out float outDepth;
         layout (location = 2) out flat float outScalePixel;
         layout (location = 3) out vec2 outUV;
-        // The quad's radius and the burst's reach, both in pixels. The first used to be
-        // scalePixel itself; a burst reaches past the halo, so now it need not be.
+        // The quad's radius and the glare's reach, both in pixels. The first used to be
+        // scalePixel itself; a glare reaches past the halo, so now it need not be.
         layout (location = 4) out flat float outSpritePx;
         layout (location = 5) out flat float outBurstPx;
-        layout (location = 6) out flat float outBurstLevel; // what of the body is left to see
+        layout (location = 6) out flat float outGlareLevel; // see rsGlareLevel
 
         {{Tuning}}
 
@@ -1121,8 +1150,10 @@ internal static class StarShaders
             peak *= seen;
             glowPx = rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels, 1.0f / rsPsfBeta) - 1.0f, 0.0f));
 
-            // Venus asks for a burst, Neptune does not. The quad takes whichever reaches further.
-            float burstPx = rsBurstReachPx(peak);
+            // Venus and Jupiter clear the glare's floor, Neptune does not. The quad takes
+            // whichever reaches further, the halo or the glare.
+            float glareLevel = rsGlareLevel(peak);
+            float burstPx = rsGlareReachPx(glareLevel, 0.0f);
 
             vec4 clipPosition = global.camera.viewProjection * vec4(instanceData.positionEgo, 1);
 
@@ -1133,8 +1164,9 @@ internal static class StarShaders
                           * (abs(ndc) - vec2(1.0f));
 
             float spritePx = max(glowPx, burstPx);
-            burstPx *= 1.0f - smoothstep(-rsBurstEdgePx, rsBurstEdgePx,
-                                         max(pastEdge.x, pastEdge.y));
+            glareLevel *= 1.0f - smoothstep(-rsBurstEdgePx, rsBurstEdgePx,
+                                            max(pastEdge.x, pastEdge.y));
+            burstPx = rsGlareReachPx(glareLevel, 0.0f);
 
             // The offset is added after the perspective divide, so a pixel is 2/screen in
             // normalised device coordinates, and the quad spans from -radius to +radius across
@@ -1155,7 +1187,7 @@ internal static class StarShaders
             outScalePixel = glowPx;
             outSpritePx = spritePx;
             outBurstPx = burstPx;
-            outBurstLevel = seen;
+            outGlareLevel = glareLevel;
             outUV = uv[gl_VertexIndex];
         }
         """;
@@ -1172,7 +1204,7 @@ internal static class StarShaders
         layout (location = 3) in vec2 inUV;
         layout (location = 4) in flat float inSpritePx;
         layout (location = 5) in flat float inBurstPx;
-        layout (location = 6) in flat float inBurstLevel;
+        layout (location = 6) in flat float inGlareLevel;
 
         layout (location = 0) out vec4 outColor;
 
@@ -1197,10 +1229,10 @@ internal static class StarShaders
             float intensity = peak / pow(1.0f + x * x, rsPsfBeta);
             float edgeFade = smoothstep(1.0f, 0.85f, r);
             intensity *= edgeFade;
-            // The same rays, from the same eye, as the stars get - and beside the core for the
+            // The same glare, from the same eye, as the stars get - and beside the core for the
             // same reason.
-            vec3 burst = rsBurst((inUV - vec2(0.5f)) * 2.0f * quadPx, inBurstPx, 0.0)
-                       * edgeFade * inBurstLevel;
+            vec3 burst = rsGlare((inUV - vec2(0.5f)) * 2.0f * quadPx, inBurstPx, 0.0, inGlareLevel)
+                       * edgeFade;
 
             // The engine has already scaled this colour by its own phase term. Ours is in the
             // magnitude, so take the hue and leave the brightness alone.
