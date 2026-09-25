@@ -10,8 +10,6 @@ StarMapConfig.json
 # large, and the shipped star binary is generated rather than authored. See release-files.txt.
 assets/
 
-# Glare model outputs (glare_sim.py, glare_fit.py)
+# Glare model outputs (glare_sim.py)
 glare_ref.npz
 glare_ref.png
-needles.npz
-needles.glsl

@@ -500,10 +500,17 @@ internal static class StarShaders
         // aperture is its point spread function. A camera's blades give N even spikes. The
         // particles give speckle instead, and since each wavelength sees the same pattern scaled
         // by its own length, a white source's speckle is drawn out into radial needles: the
-        // ciliary corona. glare_sim.py ran that model (a 2.2 mm pupil, as an eye looking at the
-        // Sun has, 870 particles, a 4096-sample aperture and 32 wavelengths) and glare_fit.py
-        // read the needles back out of it: their directions, their strengths above the glow, and
-        // their lengths, which follow from strength because the glow falls as r^-2.8.
+        // ciliary corona. glare_sim.py runs that model (a 2.2 mm pupil, as an eye looking at the
+        // Sun has, 870 particles, a 4096-sample aperture and 32 wavelengths).
+        //
+        // What it shows is not a few rays but a fan of about a thousand. Every direction is a
+        // lane of summed speckle, one diffraction spot (about a pixel) wide, so near the source
+        // the lanes overlap into a glow and only further out do they part into needles. That is
+        // what is drawn: rsLaneCount lanes evenly spaced in angle, each with a hashed jitter,
+        // strength and length, so a pixel only visits the lanes beside its own direction. A
+        // strength is a sum of speckle, so it is gamma-distributed, and a lane's length follows
+        // from it because the glow falls as r^-2.8. The fall along a needle is gentler than that,
+        // matched by eye to the simulation drawn at 40 pixels a degree.
         //
         // The pattern belongs to whoever is looking, not to what is being looked at: every light
         // in the frame shows the same needles, fixed in the screen.
@@ -512,174 +519,13 @@ internal static class StarShaders
         // cortex's fibres acting as a grating, and the cortex only lies inside a pupil wider than
         // about 4 mm: a dark-adapted eye at a streetlamp. Looking at the Sun the pupil is near
         // 2 mm, and nothing else in the sky is bright enough to show one.
-        const int rsNeedleCount = 160;
-        // xy: direction, so the shader needs no trig. z: length, as a fraction of the burst's
-        // reach. w: strength, as a fraction of the strongest. glare_fit.py wrote these.
-        const vec4 rsNeedles[rsNeedleCount] = vec4[rsNeedleCount](
-            vec4( 0.99171,  0.12850, 0.821, 0.574),
-            vec4( 0.98778,  0.15583, 0.806, 0.544),
-            vec4( 0.98501,  0.17247, 0.817, 0.566),
-            vec4( 0.98108,  0.19359, 0.771, 0.479),
-            vec4( 0.97364,  0.22807, 0.505, 0.146),
-            vec4( 0.96814,  0.25041, 0.541, 0.177),
-            vec4( 0.95144,  0.30785, 0.718, 0.393),
-            vec4( 0.91668,  0.39962, 0.636, 0.279),
-            vec4( 0.89460,  0.44687, 0.738, 0.424),
-            vec4( 0.88120,  0.47275, 0.768, 0.476),
-            vec4( 0.85615,  0.51673, 0.524, 0.162),
-            vec4( 0.83402,  0.55174, 0.546, 0.181),
-            vec4( 0.82372,  0.56700, 0.551, 0.186),
-            vec4( 0.81046,  0.58580, 0.713, 0.385),
-            vec4( 0.79117,  0.61160, 0.565, 0.200),
-            vec4( 0.78074,  0.62486, 0.670, 0.324),
-            vec4( 0.77106,  0.63676, 0.587, 0.222),
-            vec4( 0.76120,  0.64851, 0.704, 0.372),
-            vec4( 0.74095,  0.67156, 0.623, 0.263),
-            vec4( 0.72636,  0.68732, 0.521, 0.159),
-            vec4( 0.71358,  0.70057, 0.698, 0.363),
-            vec4( 0.69947,  0.71466, 0.534, 0.170),
-            vec4( 0.66700,  0.74506, 0.749, 0.443),
-            vec4( 0.65433,  0.75621, 0.714, 0.387),
-            vec4( 0.63083,  0.77592, 0.591, 0.227),
-            vec4( 0.61281,  0.79023, 0.551, 0.186),
-            vec4( 0.57078,  0.82110, 0.650, 0.297),
-            vec4( 0.55046,  0.83486, 0.652, 0.299),
-            vec4( 0.53759,  0.84321, 0.639, 0.283),
-            vec4( 0.51936,  0.85456, 0.800, 0.532),
-            vec4( 0.49557,  0.86857, 0.778, 0.493),
-            vec4( 0.46869,  0.88336, 0.654, 0.302),
-            vec4( 0.45508,  0.89045, 0.625, 0.265),
-            vec4( 0.43999,  0.89800, 0.658, 0.307),
-            vec4( 0.39540,  0.91851, 0.734, 0.418),
-            vec4( 0.36989,  0.92907, 0.650, 0.297),
-            vec4( 0.35416,  0.93518, 0.609, 0.247),
-            vec4( 0.33833,  0.94103, 0.657, 0.306),
-            vec4( 0.31368,  0.94953, 0.601, 0.237),
-            vec4( 0.03221,  0.99948, 0.638, 0.282),
-            vec4(-0.01687,  0.99986, 0.741, 0.429),
-            vec4(-0.07050,  0.99751, 0.649, 0.295),
-            vec4(-0.09344,  0.99563, 0.630, 0.271),
-            vec4(-0.12393,  0.99229, 0.891, 0.723),
-            vec4(-0.18002,  0.98366, 0.803, 0.538),
-            vec4(-0.19960,  0.97988, 0.967, 0.910),
-            vec4(-0.22807,  0.97364, 0.661, 0.311),
-            vec4(-0.25635,  0.96658, 0.834, 0.599),
-            vec4(-0.30201,  0.95331, 0.776, 0.489),
-            vec4(-0.32531,  0.94561, 0.666, 0.318),
-            vec4(-0.36418,  0.93133, 0.828, 0.587),
-            vec4(-0.40103,  0.91606, 0.751, 0.446),
-            vec4(-0.41643,  0.90917, 0.517, 0.156),
-            vec4(-0.61038,  0.79211, 0.646, 0.292),
-            vec4(-0.62366,  0.78169, 0.960, 0.890),
-            vec4(-0.63676,  0.77106, 0.872, 0.680),
-            vec4(-0.66127,  0.75015, 0.565, 0.200),
-            vec4(-0.68172,  0.73161, 0.602, 0.239),
-            vec4(-0.70711,  0.70711, 0.853, 0.638),
-            vec4(-0.72000,  0.69397, 0.963, 0.900),
-            vec4(-0.73056,  0.68285, 0.785, 0.506),
-            vec4(-0.75015,  0.66127, 0.747, 0.440),
-            vec4(-0.77592,  0.63083, 0.708, 0.378),
-            vec4(-0.79861,  0.60184, 0.765, 0.469),
-            vec4(-0.81225,  0.58331, 0.571, 0.206),
-            vec4(-0.82110,  0.57078, 0.517, 0.155),
-            vec4(-0.83571,  0.54918, 0.696, 0.360),
-            vec4(-0.84567,  0.53370, 0.600, 0.236),
-            vec4(-0.85376,  0.52067, 0.789, 0.512),
-            vec4(-0.88693,  0.46190, 0.541, 0.176),
-            vec4(-0.89732,  0.44137, 0.618, 0.257),
-            vec4(-0.91790,  0.39681, 0.830, 0.592),
-            vec4(-0.93299,  0.35990, 0.732, 0.414),
-            vec4(-0.95694,  0.29028, 0.693, 0.355),
-            vec4(-0.96337,  0.26819, 0.748, 0.441),
-            vec4(-0.97604,  0.21760, 0.771, 0.480),
-            vec4(-0.98138,  0.19208, 0.972, 0.923),
-            vec4(-0.98501,  0.17247, 0.733, 0.417),
-            vec4(-0.98826,  0.15280, 0.722, 0.400),
-            vec4(-0.99070,  0.13610, 0.810, 0.553),
-            vec4(-0.99374,  0.11175, 0.687, 0.347),
-            vec4(-0.99894,  0.04600, 0.566, 0.201),
-            vec4(-0.99171, -0.12850, 0.869, 0.674),
-            vec4(-0.98872, -0.14976, 0.743, 0.433),
-            vec4(-0.98631, -0.16491, 0.829, 0.589),
-            vec4(-0.98254, -0.18606, 0.808, 0.547),
-            vec4(-0.96737, -0.25338, 0.557, 0.192),
-            vec4(-0.96043, -0.27852, 0.540, 0.176),
-            vec4(-0.95144, -0.30785, 0.640, 0.284),
-            vec4(-0.91851, -0.39540, 0.763, 0.467),
-            vec4(-0.89528, -0.44550, 0.830, 0.591),
-            vec4(-0.88480, -0.46598, 0.648, 0.294),
-            vec4(-0.86087, -0.50883, 0.590, 0.226),
-            vec4(-0.85136, -0.52459, 0.554, 0.189),
-            vec4(-0.83571, -0.54918, 0.514, 0.153),
-            vec4(-0.81581, -0.57831, 0.679, 0.335),
-            vec4(-0.79676, -0.60429, 0.598, 0.234),
-            vec4(-0.78646, -0.61765, 0.675, 0.330),
-            vec4(-0.76517, -0.64383, 0.831, 0.593),
-            vec4(-0.73578, -0.67722, 0.548, 0.183),
-            vec4(-0.72000, -0.69397, 0.699, 0.364),
-            vec4(-0.70057, -0.71358, 0.618, 0.257),
-            vec4(-0.66700, -0.74506, 0.681, 0.339),
-            vec4(-0.65549, -0.75520, 0.719, 0.394),
-            vec4(-0.62366, -0.78169, 0.551, 0.186),
-            vec4(-0.60307, -0.79769, 0.539, 0.175),
-            vec4(-0.58952, -0.80775, 0.570, 0.205),
-            vec4(-0.57330, -0.81935, 0.712, 0.384),
-            vec4(-0.54918, -0.83571, 0.678, 0.335),
-            vec4(-0.52590, -0.85055, 0.767, 0.474),
-            vec4(-0.50883, -0.86087, 0.784, 0.503),
-            vec4(-0.49423, -0.86933, 0.641, 0.285),
-            vec4(-0.45508, -0.89045, 0.556, 0.191),
-            vec4(-0.43999, -0.89800, 0.526, 0.163),
-            vec4(-0.39540, -0.91851, 0.762, 0.465),
-            vec4(-0.33833, -0.94103, 0.643, 0.288),
-            vec4(-0.31514, -0.94905, 0.600, 0.237),
-            vec4( 0.00307, -1.00000, 0.549, 0.184),
-            vec4( 0.02607, -0.99966, 0.750, 0.444),
-            vec4( 0.06438, -0.99793, 0.723, 0.401),
-            vec4( 0.08274, -0.99657, 0.490, 0.134),
-            vec4( 0.12393, -0.99229, 0.902, 0.747),
-            vec4( 0.15431, -0.98802, 0.614, 0.253),
-            vec4( 0.19208, -0.98138, 1.000, 1.000),
-            vec4( 0.26671, -0.96378, 0.799, 0.532),
-            vec4( 0.29028, -0.95694, 0.790, 0.514),
-            vec4( 0.31077, -0.95049, 0.687, 0.347),
-            vec4( 0.33255, -0.94308, 0.560, 0.195),
-            vec4( 0.36418, -0.93133, 0.820, 0.572),
-            vec4( 0.37843, -0.92563, 0.690, 0.350),
-            vec4( 0.40243, -0.91545, 0.712, 0.384),
-            vec4( 0.41643, -0.90917, 0.603, 0.240),
-            vec4( 0.61038, -0.79211, 0.673, 0.327),
-            vec4( 0.62366, -0.78169, 0.944, 0.849),
-            vec4( 0.63558, -0.77204, 0.800, 0.533),
-            vec4( 0.65433, -0.75621, 0.494, 0.136),
-            vec4( 0.68285, -0.73056, 0.523, 0.160),
-            vec4( 0.70711, -0.70711, 0.804, 0.540),
-            vec4( 0.71894, -0.69508, 0.988, 0.965),
-            vec4( 0.73474, -0.67835, 0.793, 0.520),
-            vec4( 0.75015, -0.66127, 0.772, 0.481),
-            vec4( 0.76120, -0.64851, 0.655, 0.303),
-            vec4( 0.77978, -0.62606, 0.712, 0.384),
-            vec4( 0.79861, -0.60184, 0.703, 0.370),
-            vec4( 0.81581, -0.57831, 0.745, 0.436),
-            vec4( 0.83486, -0.55046, 0.520, 0.158),
-            vec4( 0.84567, -0.53370, 0.801, 0.534),
-            vec4( 0.89045, -0.45508, 0.494, 0.137),
-            vec4( 0.89732, -0.44137, 0.700, 0.366),
-            vec4( 0.91044, -0.41364, 0.735, 0.419),
-            vec4( 0.92092, -0.38976, 0.770, 0.479),
-            vec4( 0.93299, -0.35990, 0.755, 0.453),
-            vec4( 0.95649, -0.29175, 0.689, 0.350),
-            vec4( 0.96337, -0.26819, 0.783, 0.502),
-            vec4( 0.97604, -0.21760, 0.496, 0.138),
-            vec4( 0.98138, -0.19208, 0.920, 0.790),
-            vec4( 0.98778, -0.15583, 0.794, 0.522),
-            vec4( 0.99131, -0.13154, 0.803, 0.538),
-            vec4( 0.99374, -0.11175, 0.674, 0.329),
-            vec4( 0.99762, -0.06897, 0.541, 0.177)
-        );
-        const float rsNeedleWidthPx = 0.42;  // across a needle: the speckle, about an arcminute
-        const float rsNeedleLevel = 0.0886;  // display units: the old rays' light over more needles
-        const float rsNeedleTaper = 1.6;     // how a needle falls from base to tip, as taper^this
+        const int rsLaneCount = 1024;          // lanes around the source
+        const int rsLaneWindow = 48;           // most lanes a pixel visits either side of its own
+        const float rsNeedleWidthPx = 0.42;    // across a needle: the speckle, about an arcminute
+        const float rsNeedleLevel = 0.035;     // display units, at the base of a mean lane
+        const float rsNeedleTaper = 1.0;       // the fall to a needle's tip, as (1 - r/length)^this
+        const float rsNeedleGamma = 0.7;       // and the glow's fall along it, as (c/(r + c))^this
+        const float rsNeedleCore = 0.12;       // c, as a fraction of the needle's length
         //
         // Where rays begin at all. The scatter that makes them is always there, but it is a
         // thin thing spread over the retina and it only lifts out of the noise for a source
@@ -713,17 +559,21 @@ internal static class StarShaders
             vec4( 0.7211, -0.0379, -0.0145, 0.9200),   // 625 nm
             vec4( 0.0862, -0.0071, -0.0014, 0.8519)    // 675 nm
         );
+        // Along a lane its brightness is speckle too, one spot (about a pixel) long, and each
+        // spot is read at radius * 575/lambda like everything else, so it lands as a short radial
+        // spectrum, blue side in: the paper's rainbow fringes along the needles.
+        const float rsSpecklePx = 1.0;         // a spot's length along the lane
+        const float rsSpeckle = 0.6;           // and how far it moves the lane's brightness
         // Beside the sharp core, a soft skirt: the needle as a slightly defocused eye sees it.
-        const float rsNeedleSkirt = 0.45;       // weight of the skirt beside the core
-        const float rsNeedleSkirtScale = 3.2;   // and how much wider it is
-        // A source wider than the 20' ray-formation angle (the Sun inside about 1.6 AU) blurs its
-        // own needles, each convolved with the disc: sigma about half the disc's radius.
+        const float rsNeedleSkirt = 0.45;      // weight of the skirt beside the core
+        const float rsNeedleSkirtScale = 3.2;  // and how much wider it is
+        // A source wider than the 20' ray-formation angle blurs its own needles, each convolved
+        // with its disc as it looks on the screen: sigma about half the disc's radius in pixels,
+        // so zooming in, which grows the disc, softens them as well.
         const float rsDiscSpread = 0.5;
-        // In time. The pupil pulses (hippus) and the lens particles move with the eye's
-        // accommodation, at 0.3-2 Hz, so the glare breathes and its needles flicker. Real time,
-        // not simulation time: this is the viewer's eye, not the sky.
-        const float rsHippus = 0.06;            // the pupil's swing, as a fraction of its size
-        const float rsNeedleFlicker = 0.25;     // how far a needle's strength swings
+        // In time, the pupil pulses (hippus) and the glare breathes with it. Real time, not
+        // simulation time: this is the viewer's eye, not the sky.
+        const float rsHippus = 0.06;           // the pupil's swing, as a fraction of its size
 
         // The game's own lens flare setting, carried into these shaders - which cannot see the
         // flare buffer - through the camera UBO's spare word. Starburst.cs writes it: the
@@ -746,6 +596,12 @@ internal static class StarShaders
             return clamp(mags * rsRayPxPerMag * rsBurstStrength(), 0.0, rsMaxRayPx);
         }
 
+        // One lane's random numbers, in [0, 1).
+        float rsLane(int k, float salt)
+        {
+            return rsHash(vec3(float(k), salt, 17.0));
+        }
+
         // The burst at an offset from the source, in screen pixels, for a source whose own disc
         // is discPx in radius (0 for a point).
         //
@@ -757,38 +613,54 @@ internal static class StarShaders
         // speckle's width (one over its diameter), and a widened needle spreads the same light.
         vec3 rsBurst(vec2 offsetPx, float reachPx, float discPx)
         {
-            if (reachPx <= 0.0) return vec3(0.0);
-            float time = global.camera.time;
-            float pupil = max(1.0 + rsHippus * rsNoise(time / 2.2, 7.0), 0.5);  // noise(t / p), p = 2.2 mm
+            float r = length(offsetPx);
+            if (reachPx <= 0.0 || r <= 0.0) return vec3(0.0);
+            float pupil = max(1.0 + rsHippus * rsNoise(global.camera.time / 2.2, 7.0), 0.5);
             float sharp = rsNeedleWidthPx / pupil;
             float spread = rsDiscSpread * discPx;
             float width = sqrt(sharp * sharp + spread * spread);
-            float skirt = width * rsNeedleSkirtScale;
-            float cutoff = 4.0 * skirt;
+            // The skirt is a sharp needle's. Once the disc has blurred a needle wider there is
+            // nothing left for it to add, and it would triple the lanes each pixel visits.
+            float skirt = max(sharp * rsNeedleSkirtScale, width);
             float level = rsNeedleLevel * rsBurstStrength() * pupil * pupil * sharp / width;
+
+            const float tau = 6.28318531;
+            float spacing = tau / float(rsLaneCount);
+            float theta = atan(offsetPx.y, offsetPx.x);
+            if (theta < 0.0) theta += tau;
+            int centre = int(floor(theta / spacing));
+            int span = min(int(ceil(4.0 * skirt / (r * spacing))), rsLaneWindow);
+
             vec3 total = vec3(0.0);
-            for (int k = 0; k < rsNeedleCount; k++)
+            for (int dk = -span; dk <= span; dk++)
             {
-                vec4 needle = rsNeedles[k];
-                // Across the needle first: with this many, nearly all of them are dismissed on
-                // two multiplies and a compare.
-                float across = offsetPx.y * needle.x - offsetPx.x * needle.y;
-                if (abs(across) > cutoff) continue;
-                float along = dot(offsetPx, needle.xy);
+                int k = (centre + dk + rsLaneCount) % rsLaneCount;
+                float d = theta - (float(k) + rsLane(k, 1.0)) * spacing;
+                float along = r * cos(d);
                 if (along <= 0.0) continue;             // one sided, so lengths can differ
-                float rate = 0.3 + 1.7 * fract(float(k) * 0.618034);
-                float flicker = max(1.0 + rsNeedleFlicker
-                                        * rsNoise(time * rate + float(k) * 3.7, float(k) + 11.0), 0.0);
+                float across = r * sin(d);
+                // A sum of three speckle intensities, each exponential, averaged: gamma(3).
+                float strength = -(log(max(1.0 - rsLane(k, 5.0), 1e-6))
+                                   + log(max(1.0 - rsLane(k, 6.0), 1e-6))
+                                   + log(max(1.0 - rsLane(k, 7.0), 1e-6))) / 3.0;
+                // Visible until strength * r^-2.8 falls away, so length ~ strength^(1/2.8), a
+                // strong lane (three times the mean) running the burst's full reach.
+                float reach = reachPx * clamp(pow(strength / 3.0, 1.0 / 2.8), 0.25, 1.0);
                 float a2 = across * across;
                 float profile = (exp(-0.5 * a2 / (width * width))
                                  + rsNeedleSkirt * exp(-0.5 * a2 / (skirt * skirt)))
                               / (1.0 + rsNeedleSkirt);
-                float reach = max(reachPx * needle.z, 1e-3);
                 vec3 colour = vec3(0.0);
                 for (int b = 0; b < rsBandCount; b++)
-                    colour += rsBands[b].rgb
-                            * pow(max(1.0 - along * rsBands[b].w / reach, 0.0), rsNeedleTaper);
-                total += needle.w * flicker * profile * colour;
+                {
+                    float at = along * rsBands[b].w;    // where this band reads the 575 nm pattern
+                    float u = at / reach;
+                    float fall = pow(max(1.0 - u, 0.0), rsNeedleTaper)
+                               * pow(rsNeedleCore / (u + rsNeedleCore), rsNeedleGamma);
+                    float spot = 1.0 + rsSpeckle * rsFlicker(at / rsSpecklePx, float(k) + 23.0);
+                    colour += rsBands[b].rgb * fall * spot;
+                }
+                total += strength * profile * colour;
             }
             return max(total, vec3(0.0)) * level;
         }

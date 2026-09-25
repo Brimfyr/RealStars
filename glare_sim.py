@@ -10,7 +10,8 @@ One departure. The paper's Fresnel term exp(i pi r^2 / (lambda d)), taken litera
 of a 6 mm pupil on a 2 um grid). A focused eye cancels that term with its lens; what is left is
 its residual defocus, so that is what is applied: 0.2 dioptres, the usual scale of it.
 
-    py glare_sim.py [pupil_mm] [seed]    -> glare_ref.npz, glare_ref.png
+    py glare_sim.py [pupil_mm] [seed]    -> glare_ref.npz, glare_ref.png, and the two numbers above
+    (the shader's glare was matched against: py glare_sim.py 2.2)
 """
 import sys
 import time
@@ -108,6 +109,18 @@ for i, lam in enumerate(lams):
 print(f"spectral PSF: {OUT} px over +-{OUT_HALF_DEG} deg ({time.time() - t0:.1f} s)")
 
 np.savez_compressed("glare_ref.npz", rgb=rgb.astype(np.float32), half_deg=OUT_HALF_DEG, pupil_mm=PUPIL_MM)
+
+# The two numbers the shader takes from this: how steeply the glow falls with radius (a needle's
+# length follows from its strength through it), and how much the lanes differ around a circle.
+lum = np.maximum(rgb, 0.0).mean(axis=0)
+radii = np.linspace(0.3, 2.5, 60)
+ang = np.linspace(0, 2 * np.pi, 4096, endpoint=False)
+RR, AA = np.meshgrid(radii, ang, indexing="ij")
+px = (OUT - 1) / (2 * OUT_HALF_DEG)
+polar = map_coordinates(lum, [RR * np.sin(AA) * px + (OUT - 1) / 2, RR * np.cos(AA) * px + (OUT - 1) / 2], order=1)
+env = polar.mean(axis=1)
+slope = -np.polyfit(np.log(radii), np.log(env), 1)[0]
+print(f"glow falls as r^-{slope:.2f} between 0.3 and 2.5 deg; lanes vary {np.mean(polar.std(axis=1) / env):.2f} around a circle")
 
 # ---- a look at it: log exposure, 7 decades below the peak ------------------------------------
 lum = rgb.mean(axis=0)
