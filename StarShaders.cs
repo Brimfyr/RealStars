@@ -568,12 +568,14 @@ internal static class StarShaders
         const float rsNeedleSkirt = 0.45;      // weight of the skirt beside the core
         const float rsNeedleSkirtScale = 3.2;  // and how much wider it is
         // A source wider than the 20' ray-formation angle blurs its own needles, each convolved
-        // with its disc as it looks on the screen: sigma about half the disc's radius in pixels,
-        // so zooming in, which grows the disc, softens them as well.
-        const float rsDiscSpread = 0.5;
-        // In time, the pupil pulses (hippus) and the glare breathes with it. Real time, not
-        // simulation time: this is the viewer's eye, not the sky.
-        const float rsHippus = 0.06;           // the pupil's swing, as a fraction of its size
+        // with its disc as it looks on the screen, so zooming in, which grows the disc, softens
+        // them as well. A flat disc spreads a line to sigma R/2, a limb-darkened Sun to about
+        // 0.47 R; this is set below both, by eye, because the full amount washed the needles out
+        // more than an eye seems to.
+        const float rsDiscSpread = 0.35;
+        //
+        // The paper's glare moves in time, with the pupil and the particles in the eye. Both
+        // were tried and both are left out: the pattern holds still.
 
         // The game's own lens flare setting, carried into these shaders - which cannot see the
         // flare buffer - through the camera UBO's spare word. Starburst.cs writes it: the
@@ -609,20 +611,19 @@ internal static class StarShaders
         // light throws its needles further, which is how a burst reads as bright. Its BRIGHTNESS
         // does not. Scattered light inside an eye is a thin thing spread over the retina, so the
         // level is in display units rather than a fraction of a peak that would saturate them
-        // all alike. The pupil's pulse moves both the light through it (its area) and the
-        // speckle's width (one over its diameter), and a widened needle spreads the same light.
+        // all alike. A needle widened by its source's disc spreads the same light, so it dims
+        // as it widens.
         vec3 rsBurst(vec2 offsetPx, float reachPx, float discPx)
         {
             float r = length(offsetPx);
             if (reachPx <= 0.0 || r <= 0.0) return vec3(0.0);
-            float pupil = max(1.0 + rsHippus * rsNoise(global.camera.time / 2.2, 7.0), 0.5);
-            float sharp = rsNeedleWidthPx / pupil;
+            float sharp = rsNeedleWidthPx;
             float spread = rsDiscSpread * discPx;
             float width = sqrt(sharp * sharp + spread * spread);
             // The skirt is a sharp needle's. Once the disc has blurred a needle wider there is
             // nothing left for it to add, and it would triple the lanes each pixel visits.
             float skirt = max(sharp * rsNeedleSkirtScale, width);
-            float level = rsNeedleLevel * rsBurstStrength() * pupil * pupil * sharp / width;
+            float level = rsNeedleLevel * rsBurstStrength() * sharp / width;
 
             const float tau = 6.28318531;
             float spacing = tau / float(rsLaneCount);
