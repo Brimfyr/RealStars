@@ -729,6 +729,17 @@ internal static class StarShaders
         const float rsGlareKappa = 0.62;
         const float rsGlareFloor = 0.004;      // what the glow must clear to be seen
         const float rsGlareCeiling = 0.25;     // the most the glow adds, however bright
+        // The veil: the eye's other glare. The needles are the diffraction part of its point
+        // spread function; light is also scattered in the cornea, the lens and off the back of
+        // the eye, smoothly and with little colour, and that veiling glare is what reads as a
+        // corona round the Sun. The CIE's formula for it goes as 10/theta^3 + 5/theta^2 of the
+        // light reaching the eye, theta in degrees, so it falls more slowly than the needles:
+        // the 1/theta^2 term takes over past two degrees. The same glow and level as the needles,
+        // at a share of it, falling between the formula's two terms; share and fall set by eye.
+        // It clears the same floor, so a faint source has none, and Venus a faint few pixels.
+        const float rsVeilShare = 0.5;
+        const float rsVeilFall = 2.2;
+        const float rsVeilCorePx = 1.5;
         // A glare shorter than this lies under its own source's core, so it is not drawn, and
         // fades in over the next as much again: it is the bright stars' twinkle that crosses it.
         const float rsGlareMinPx = 3.0;
@@ -817,10 +828,10 @@ internal static class StarShaders
             return rsGlareScatter * pow(max(peak, 0.0), rsGlareKappa) * rsBurstStrength();
         }
 
-        // How far the glare reaches: where a strong lane, three times the mean, sinks to the
+        // How far the needles reach: where a strong lane, three times the mean, sinks to the
         // floor, in the reddest band, which reads the pattern furthest out. From the limb, and
-        // capped from the centre. Zero means no glare, and no quad grown to hold one.
-        float rsGlareReachPx(float level, float discPx)
+        // capped from the centre. Zero means none.
+        float rsNeedleReachPx(float level, float discPx)
         {
             float excess = 3.0 * level / rsGlareFloor;
             if (excess <= 1.0) return 0.0;
@@ -828,6 +839,24 @@ internal static class StarShaders
                        / rsBands[rsBandCount - 1].w;
             float reach = min(discPx + limb, rsMaxRayPx);
             return reach - discPx < rsGlareMinPx ? 0.0 : reach;
+        }
+
+        // How far the veil reaches: where its share of the glow sinks to the floor. Past the
+        // needles, for the Sun: slower to fall is what makes it a corona.
+        float rsVeilReachPx(float level, float discPx)
+        {
+            float excess = rsVeilShare * level / rsGlareFloor;
+            if (excess <= 1.0) return 0.0;
+            float limb = rsVeilCorePx * sqrt(pow(excess, 2.0 / rsVeilFall) - 1.0);
+            float reach = min(discPx + limb, rsMaxRayPx);
+            return reach - discPx < rsGlareMinPx ? 0.0 : reach;
+        }
+
+        // How far the glare reaches, needles or veil. Zero means no glare, and no quad grown to
+        // hold one.
+        float rsGlareReachPx(float level, float discPx)
+        {
+            return max(rsNeedleReachPx(level, discPx), rsVeilReachPx(level, discPx));
         }
 
         // One lane's random numbers, in [0, 1).
@@ -855,6 +884,24 @@ internal static class StarShaders
             if (dot(offsetPx, offsetPx) < 1e-6) offsetPx = vec2(1e-3, 0.0);
             float r = length(offsetPx);
             if (reachPx <= 0.0 || level <= 0.0 || r >= reachPx) return vec3(0.0);
+            float fromLimb = max(r - discPx, 0.0);
+
+            // The veil, smooth and colourless, from the limb as the rest is. Taken to nothing over
+            // the last fifth of its own reach, as the needles are over theirs.
+            vec3 veil = vec3(0.0);
+            float veilReach = min(rsVeilReachPx(level, discPx), reachPx);
+            if (r < veilReach)
+            {
+                float x = fromLimb / rsVeilCorePx;
+                float g = rsVeilShare * level * pow(1.0 + x * x, -0.5 * rsVeilFall);
+                float v = max(rsGlareCeiling * (1.0 - exp(-g / rsGlareCeiling)) - rsGlareFloor, 0.0);
+                veil = vec3(v * clamp((veilReach - r) / (0.2 * veilReach), 0.0, 1.0)
+                              * smoothstep(rsGlareMinPx, 2.0 * rsGlareMinPx, veilReach - discPx));
+            }
+
+            // Past the needles only the veil is left, and the lanes need not be visited at all.
+            float needleReach = min(rsNeedleReachPx(level, discPx), reachPx);
+            if (r >= needleReach) return veil;
             float sharp = rsNeedleWidthPx;
             float spread = rsDiscSpread * discPx;
             float width = sqrt(sharp * sharp + spread * spread);
@@ -872,7 +919,6 @@ internal static class StarShaders
             // Each band's glow here, under the ceiling. A band reads the 575 nm glow at
             // radius * 575/lambda, like everything else.
             float glow[rsBandCount];
-            float fromLimb = max(r - discPx, 0.0);
             for (int b = 0; b < rsBandCount; b++)
             {
                 float x = fromLimb * rsBands[b].w / rsGlareCorePx;
@@ -914,11 +960,11 @@ internal static class StarShaders
                 }
                 total += profile * colour;
             }
-            // Taken to nothing over the last fifth of the reach, where only the strongest lanes
+            // Taken to nothing over the last fifth of their reach, where only the strongest lanes
             // are left, and faded in over the shortest glares.
-            float fade = clamp((reachPx - r) / (0.2 * reachPx), 0.0, 1.0)
-                       * smoothstep(rsGlareMinPx, 2.0 * rsGlareMinPx, reachPx - discPx);
-            return max(total, vec3(0.0)) * share * fade;
+            float fade = clamp((needleReach - r) / (0.2 * needleReach), 0.0, 1.0)
+                       * smoothstep(rsGlareMinPx, 2.0 * rsGlareMinPx, needleReach - discPx);
+            return max(total, vec3(0.0)) * share * fade + veil;
         }
 
         // ---- what is in the way ----
