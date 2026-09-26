@@ -375,6 +375,30 @@ internal static class StarShaders
         // What the gather found, for rsSunBurst. No light means no glare from this group.
         vec2 rsSunPx, rsSunCentre;
         float rsSunPeak, rsSunDisc, rsSunLight = 0.0, rsSunOpen;
+        vec3 rsSunHue = vec3(1.0);
+
+        // The colour sunlight arrives in along a direction, at unit luminance: the engine's own
+        // transmittance, the table the ground is lit by, for a camera inside the air. The raw
+        // texel, without the table's planet shadow, so the last of the Sun setting keeps the
+        // horizon's colour instead of losing one. Outside the air the table does not apply, and
+        // the sunlight is taken as it is.
+        vec3 rsArrivingHue(vec3 towardLight)
+        {
+            vec3 light = global.lighting.sunColor.rgb;
+            vec3 centre = global.lighting.planetPosition.xyz;
+            float r = length(centre);
+            float top = global.lighting.planetRadius + global.lighting.atmosphereHeight;
+            if (rsHasAir() && r < top)
+            {
+                vec2 uv = GetTransmittanceLutUV(global.lighting.planetRadius, top, r,
+                                                dot(-centre / r, towardLight),
+                                                vec2(textureSize(transmittanceLutGlobal, 0).xy));
+                light *= textureLod(transmittanceLutGlobal,
+                                    vec3(uv, float(global.lighting.atmosphereLutLayer)), 0.0).rgb;
+            }
+            float luma = dot(light, rsLuma);
+            return luma > 1e-20 ? light / luma : vec3(1.0);
+        }
 
         // Called at the top of main by every invocation, before any of them can return: the
         // barrier inside holds only where the whole group arrives.
@@ -455,14 +479,24 @@ internal static class StarShaders
             rsSunLight = sum.x / float(rsSunSamples);
             rsSunOpen = sum.y / float(rsSunSamples);
             rsSunCentre = sum.x > 0.0 ? sum.zw / sum.x : rsSunPx;
+
+            // Clouds, which neither the depth nor the air above sees: the engine's cloud shadow,
+            // the direct sunlight it lights the ground and vessels by, read where the camera is.
+            // Venus's deck is tens of optical depths thick, and the burst there went only by the
+            // gas, so it shone through a sky with no Sun in it.
+            rsSunLight *= GetCloudShadow(vec3(0.0));
+            // And in the colour the light arrives in, from where the light that got in is.
+            rsSunHue = rsArrivingHue(rsPixelDirection(rsSunCentre));
         }
 
         vec3 rsSunBurst(vec2 pixel, ivec2 dim)
         {
             if (rsSunLight <= 0.0) return vec3(0.0);
             float discSeen = rsSunDisc * sqrt(rsSunOpen);
-            vec3 sunLight = global.lighting.sunColor.rgb;
-            vec3 tint = sunLight / max(max(sunLight.r, sunLight.g), max(sunLight.b, 1e-6));
+            // At unit luminance, as the stars' colours are, so the level alone sets how bright.
+            // It was the Sun's own colour at its brightest channel: white, whatever the air, so
+            // a burst through thick air came out a dim gray round an orange Sun.
+            vec3 tint = rsSunHue;
             float level = rsGlareLevel(rsSunPeak * rsSunLight);
             return tint * rsGlare(pixel - rsSunCentre, rsGlareReachPx(level, discSeen), discSeen, level);
         }
