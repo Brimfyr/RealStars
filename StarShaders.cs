@@ -376,6 +376,7 @@ internal static class StarShaders
         vec2 rsSunPx, rsSunCentre;
         float rsSunPeak, rsSunDisc, rsSunLight = 0.0, rsSunOpen;
         vec3 rsSunHue = vec3(1.0);
+        float rsSunCloud = 1.0;
 
         // The colour sunlight arrives in along a direction, at unit luminance: the engine's own
         // transmittance, the table the ground is lit by, for a camera inside the air. The raw
@@ -482,22 +483,27 @@ internal static class StarShaders
 
             // Clouds, which neither the depth nor the air above sees: the engine's cloud shadow,
             // the direct sunlight it lights the ground and vessels by, read where the camera is.
-            // Venus's deck is tens of optical depths thick, and the burst there went only by the
-            // gas, so it shone through a sky with no Sun in it.
-            rsSunLight *= GetCloudShadow(vec3(0.0));
+            rsSunCloud = GetCloudShadow(vec3(0.0));
             // And in the colour the light arrives in, from where the light that got in is.
             rsSunHue = rsArrivingHue(rsPixelDirection(rsSunCentre));
         }
 
         vec3 rsSunBurst(vec2 pixel, ivec2 dim)
         {
-            if (rsSunLight <= 0.0) return vec3(0.0);
+            if (rsSunLight <= 0.0 || rsSunCloud <= 0.0) return vec3(0.0);
             float discSeen = rsSunDisc * sqrt(rsSunOpen);
             // At unit luminance, as the stars' colours are, so the level alone sets how bright.
             // It was the Sun's own colour at its brightest channel: white, whatever the air, so
             // a burst through thick air came out a dim gray round an orange Sun.
             vec3 tint = rsSunHue;
-            float level = rsGlareLevel(rsSunPeak * rsSunLight);
+            // The clouds take the glare itself down, in proportion, rather than the light it is
+            // worked from. The level's peak^kappa is the eye adapting to the source it looks at,
+            // and under a cloud deck it is adapted to the clouds, which the Sun still lights: only
+            // the direct beam that makes the glare falls with the cloud. Through the law, a deck
+            // that passed a millionth of the light still left a burst, deep in Jupiter's clouds
+            // and on Venus's surface. In proportion it ends near optical depth 10, about where
+            // the disc stops outshining the cloud around it.
+            float level = rsGlareLevel(rsSunPeak * rsSunLight) * rsSunCloud;
             return tint * rsGlare(pixel - rsSunCentre, rsGlareReachPx(level, discSeen), discSeen, level);
         }
         """;
