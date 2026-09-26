@@ -377,8 +377,8 @@ internal static class StarShaders
             float discPx = max(intBitsToFloat(global.lighting.lpPad1), 0.0);
             float whitePx = rsPsfCore * sqrt(max(pow(max(peak / rsMaxOutput, 1.0),
                                                      1.0 / rsPsfBeta) - 1.0, 0.0));
-            // The white ring is our sprite's, and the sprite gives way to the sphere: once the
-            // sphere has taken over, the Sun looks like its disc.
+            // The white ring is our sprite's, and it draws in to the limb as the sphere takes
+            // over (see Star.frag): once the sphere is whole, the Sun looks like its disc.
             float looksPx = discPx + whitePx * (1.0 - rsSphereShown());
             float reach = rsGlareReachPx(rsGlareLevel(peak), discPx);
             vec2 fromSun = pixel - sunPx;
@@ -1138,7 +1138,8 @@ internal static class StarShaders
                                / (rsPi * rsPsfCore * rsPsfCore);
                 float whitePx = rsPsfCore * sqrt(max(pow(max(fullPeak / {{MaxOutput}}, 1.0),
                                                          1.0 / rsPsfBeta) - 1.0, 0.0));
-                sunLooksRad = sunAngularRad * (discPx + whitePx) / discPx;
+                // The ring draws in to the limb as the sphere takes over - see Star.frag.
+                sunLooksRad = sunAngularRad * (discPx + whitePx * (1.0 - rsSphereShown())) / discPx;
             }
             float seen = rsVisibility(starDir, distancePc * rsParsecMetres, sunLooksRad);
 
@@ -1230,7 +1231,12 @@ internal static class StarShaders
             // convolved with the profile, so the halo begins at the edge of the disc. For a
             // point source the disc radius is zero and this is the ordinary profile.
             float px = r * inStar.y;
-            float x = max(px - inStar.z, 0.0) / rsPsfCore;
+            // Where the engine's sphere takes the Sun over, the white ring - the disc spread past
+            // its limb by the point spread function - draws in to the limb as the sphere fades
+            // in, so the two are one size by the time the sphere is whole: the eye resolving the
+            // Sun's real size as it closes on it. See rsSphereShown.
+            float spread = inStar.z > 0.0 ? max(1.0 - rsSphereShown(), 1e-3) : 1.0;
+            float x = max(px - inStar.z, 0.0) / (rsPsfCore * spread);
 
             // Moffat, normalised to unit energy:
             //     I(r) = (beta-1)/(pi a^2) * (1 + (r/a)^2)^-beta
@@ -1266,8 +1272,9 @@ internal static class StarShaders
             // air, so the engine's is the only dimming it gets, which is what turns it orange as
             // it sets.
             float undo = sun ? 1.0 : rsAirUndo(gl_FragCoord.xy);
-            // And the Sun's sprite gives way to the engine's sphere as the sphere fades in -
-            // disc, white ring and halo together - so only one of them shows: rsSphereShown.
+            // And as its ring draws in, the Sun's sprite hands its light to the sphere over the
+            // same distances, so nothing of it is left under the sphere to show through the
+            // sphere's softened edge once its limb darkening shows: rsSphereShown.
             float giveWay = sun ? 1.0 - rsSphereShown() : 1.0;
             outColor = vec4(inColor.rgb * (vec3(min(intensity, cap)) + burst) * undo * giveWay, 1.0f);
         }
