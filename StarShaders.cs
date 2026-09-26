@@ -34,7 +34,6 @@ internal static class StarShaders
     /// </summary>
     public static readonly string[] Redirected =
         { "Sun/Sun.frag", "PostProcess/sunbloom.frag", "PostProcess/sunbloom_merge.comp",
-          "PostProcess/sunbloom_blur.comp",
           "PostProcess/kawase_downsample.comp", "PostProcess/kawase_downsample_with_thresholds.comp" };
 
     /// <summary>
@@ -99,8 +98,9 @@ internal static class StarShaders
          + "    // sphere has a limb and a darkened edge where the sprite has a halo, and trading\n"
          + "    // one for the other between two frames is the jump that was left. It fades in\n"
          + "    // across the top half of the range instead, and has reached nothing by the time\n"
-         + "    // the engine drops it. Both distances are read off the radius the lighting\n"
-         + "    // carries, the same number the engine reads them from, so they cannot drift.\n"
+         + "    // the engine drops it; and the sprite fades out by as much (rsSphereShown, on\n"
+         + "    // these same two distances), so only one of them shows. Both distances are read\n"
+         + "    // off the radius the lighting carries, the number the engine reads them from.\n"
          + "    alpha *= 1. - smoothstep(44. * sunRadius, 88. * sunRadius, length(centerPos));\n"
          + "\n"
          + "    // Limb darkening: a sight line near the edge is slanted, so it reaches optical\n"
@@ -138,8 +138,8 @@ internal static class StarShaders
         // The Sun's disc and its glare are our sprite's now, at the real angular size and the
         // real magnitude, so the pass has nothing left to contribute. Only the sun's own term
         // goes: the occlusion output below is untouched, so the lens flare still knows whether
-        // the Sun is in view. The spokes in sunbloom_blur.comp are left alone; its ghosts go,
-        // further down.
+        // the Sun is in view. The spokes and ghosts in sunbloom_blur.comp are left alone here:
+        // SunGlow sets SunDot to zero, and that gates both.
         // The Sun's starburst is drawn here, over the finished image, rather than with the
         // stars. It is scatter inside whoever is looking, so it lies over everything they are
         // looking at - and drawn with the stars it went UNDER the first thing in front of the
@@ -158,14 +158,6 @@ internal static class StarShaders
         ("PostProcess/sunbloom.frag",
          "    float sunPower = innerSun * innerSunScalar + outerSun * sunData.outerSunColorScalar;",
          "    float sunPower = 0.;  // Real Stars: the Sun is drawn as the star it is"),
-
-        // And the ghost orbs go. They are a camera lens's reflections between its elements, and
-        // the glare here is an eye's, which has none. The nearest pair sat at 0.85 of the Sun's
-        // offset from the screen centre, the size of its disc, and read as a second star beside
-        // it once the blooms stopped burying everything round the Sun. The spokes stay.
-        ("PostProcess/sunbloom_blur.comp",
-         "        flareColor += lensFlareColor * pctvis;",
-         "        // Real Stars: no ghost orbs - an eye has no lens elements to reflect between."),
 
         // The engine's two blooms - Global Bloom and Threshold Bloom in the settings - each start
         // with one of these downsamples, and the Sun reached both at 24, burying its needles in
@@ -385,7 +377,9 @@ internal static class StarShaders
             float discPx = max(intBitsToFloat(global.lighting.lpPad1), 0.0);
             float whitePx = rsPsfCore * sqrt(max(pow(max(peak / rsMaxOutput, 1.0),
                                                      1.0 / rsPsfBeta) - 1.0, 0.0));
-            float looksPx = discPx + whitePx;
+            // The white ring is our sprite's, and the sprite gives way to the sphere: once the
+            // sphere has taken over, the Sun looks like its disc.
+            float looksPx = discPx + whitePx * (1.0 - rsSphereShown());
             float reach = rsGlareReachPx(rsGlareLevel(peak), discPx);
             vec2 fromSun = pixel - sunPx;
             float outer = reach + looksPx;
@@ -703,11 +697,41 @@ internal static class StarShaders
         // were tried and both are left out: the pattern holds still.
 
         // The game's own lens flare setting, carried into these shaders - which cannot see the
-        // flare buffer - through the camera UBO's spare word. Starburst.cs writes it: the
-        // toggle and the intensity together, and zero when either of them says no.
+        // flare buffer - through the camera UBO's spare word, as its low half. Starburst.cs
+        // writes it: the toggle and the intensity together, and zero when either of them says no.
+        // The high half is flags, the same bits Starburst.cs names.
+        vec2 rsCameraWord()
+        {
+            return unpackHalf2x16(uint(global.camera.pad0));
+        }
+
         float rsBurstStrength()
         {
-            return max(intBitsToFloat(global.camera.pad0), 0.0);
+            return max(rsCameraWord().x, 0.0);
+        }
+
+        // Whether this view draws the engine's Sun sphere: only the main one does.
+        bool rsSphereHere()
+        {
+            return (int(rsCameraWord().y) & 1) != 0;
+        }
+
+        // Whether the stars are switched off in the settings - see StarsOff.cs.
+        bool rsStarsHidden()
+        {
+            return (int(rsCameraWord().y) & 2) != 0;
+        }
+
+        // How far the engine's Sun sphere has faded in, as Sun.frag fades it: none at 88 solar
+        // radii, whole by 44. Our sprite of the Sun gives way to it by as much, so only one of
+        // the two is ever showing; in a view that draws no sphere it never gives way.
+        const float rsSphereWholeRadii = 44.0;
+        const float rsSphereGoneRadii = 88.0;
+        float rsSphereShown()
+        {
+            if (!rsSphereHere()) return 0.0;
+            float radii = length(global.lighting.sunPosition.xyz) / max(global.lighting.sunRadius, 1.0);
+            return 1.0 - smoothstep(rsSphereWholeRadii, rsSphereGoneRadii, radii);
         }
 
         // The glow's level at the source, from the peak its core would reach unclamped. Whatever
@@ -1040,6 +1064,19 @@ internal static class StarShaders
 
         void main()
         {
+            // With the stars switched off in the settings the engine skips this pass, and
+            // StarsOff draws it anyway so the Sun stays: every other star is left out, placed
+            // off the screen, where nothing of it is drawn.
+            if (rsStarsHidden() && dot(position, position) >= 1e-12)
+            {
+                outColor = vec3(0.0);
+                outUv = vec2(0.5);
+                outStar = vec4(0.0);
+                outGlareLevel = 0.0;
+                gl_Position = vec4(2.0, 2.0, 0.5, 1.0);
+                return;
+            }
+
             // Unpack the instance data
             vec4 packedData = unpackRGBA(packed);
             outColor = packedData.xyz;
@@ -1229,7 +1266,10 @@ internal static class StarShaders
             // air, so the engine's is the only dimming it gets, which is what turns it orange as
             // it sets.
             float undo = sun ? 1.0 : rsAirUndo(gl_FragCoord.xy);
-            outColor = vec4(inColor.rgb * (vec3(min(intensity, cap)) + burst) * undo, 1.0f);
+            // And the Sun's sprite gives way to the engine's sphere as the sphere fades in -
+            // disc, white ring and halo together - so only one of them shows: rsSphereShown.
+            float giveWay = sun ? 1.0 - rsSphereShown() : 1.0;
+            outColor = vec4(inColor.rgb * (vec3(min(intensity, cap)) + burst) * undo * giveWay, 1.0f);
         }
         """;
 

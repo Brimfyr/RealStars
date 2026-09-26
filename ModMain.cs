@@ -111,6 +111,17 @@ public class ModMain
             ShaderShadow.Log("WARN: StaticCelestialDistanceRendering.GetApparentSizeScale not found; "
                              + "distant planets keep the game's own brightness");
 
+        // The Sun is in our star pass, which the engine skips with the stars switched off. Run
+        // is drawn by every view that shows the sky whatever the setting, so the star pass goes
+        // in after it on those frames - see StarsOff.
+        MethodInfo? distantRun = distance == null ? null : AccessTools.Method(distance, "Run");
+        if (distantRun != null)
+            harmony.Patch(distantRun,
+                postfix: new HarmonyMethod(typeof(StarsOff), nameof(StarsOff.RunPostfix)));
+        else
+            ShaderShadow.Log("WARN: StaticCelestialDistanceRendering.Run not found; "
+                             + "the Sun goes when the stars are switched off");
+
         // Scintillation needs the observer's air, which the shader cannot work out: the engine
         // only refreshes its planet fields for a body with an atmosphere, so beside an airless
         // moon they hold the last one's values. Running on that same method lets us write zero

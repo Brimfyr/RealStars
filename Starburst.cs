@@ -16,13 +16,23 @@ namespace RealStars;
 /// is the eye's, and the Sun seen in the map is still the Sun. The intensity rides along in the
 /// same number, so the slider moves the rays as well; zero for either means no burst at all,
 /// and with it no quad grown to hold one.
+///
+/// The word is two halves: the strength, and flags. Whether this view draws the engine's Sun
+/// sphere, which only the main view does, so our sprite knows whether to give way to it; and
+/// whether the stars are switched off, so the star shader keeps only the Sun (see StarsOff).
+/// Both read as no when this has never run, the safe way round: the sprite stays, and the
+/// stars show.
 /// </summary>
 internal static class Starburst
 {
     /// <summary>Above this the slider is doing something other than taste, so it is capped.</summary>
     private const float MaxStrength = 4.0f;
 
-    private static FieldInfo? _cameraArray, _pad, _graphics, _lensFlare, _intensity;
+    /// <summary>The flags in the word's high half. Star.vert and Star.frag read the same bits.</summary>
+    internal const int SphereHere = 1, StarsHidden = 2;
+
+    private static FieldInfo? _cameraArray, _pad, _graphics, _lensFlare, _intensity, _stars;
+    private static PropertyInfo? _viewType;
     private static PropertyInfo? _currentSettings;
     private static FieldInfo? _lightingArray, _atmosphereHeight;
     private static Type? _atmosphericBody;
@@ -57,6 +67,9 @@ internal static class Starburst
             object? graphics = settings == null ? null : _graphics?.GetValue(settings);
             _lensFlare ??= graphics == null ? null : AccessTools.Field(graphics.GetType(), "LensFlare");
             _intensity ??= graphics == null ? null : AccessTools.Field(graphics.GetType(), "LensFlareIntensity");
+            _stars ??= graphics == null ? null : AccessTools.Field(graphics.GetType(), "Stars");
+            // The interface's own property, which reaches an explicit implementation too.
+            _viewType ??= AccessTools.TypeByName("KSA.IViewport")?.GetProperty("Type");
 
             _resolved = true;
             _usable = _lensFlare != null && _intensity != null && _pad != null;
@@ -70,7 +83,14 @@ internal static class Starburst
             float slider = _intensity!.GetValue(graphics) is float f && f > 0.0f ? f : 1.0f;
             float strength = on ? Math.Min(slider, MaxStrength) : 0.0f;
 
-            _pad!.SetValue(cbox, BitConverter.SingleToInt32Bits(strength));
+            // RenderGame draws the Sun sphere for the main view; the other views and the editor
+            // draw none, and there our sprite is the Sun at every distance.
+            bool main = _viewType?.GetValue(viewport)?.ToString() == "Main";
+            bool starsOff = _stars?.GetValue(graphics) is bool shown && !shown;
+            int flags = (main ? SphereHere : 0) | (starsOff ? StarsHidden : 0);
+            int word = BitConverter.HalfToUInt16Bits((Half)strength)
+                     | (BitConverter.HalfToUInt16Bits((Half)flags) << 16);
+            _pad!.SetValue(cbox, word);
             cameras.SetValue(cbox, slot);
 
             ClearStaleAtmosphere(program, viewport, slot);
