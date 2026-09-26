@@ -15,7 +15,9 @@ So this writes its own, with three changes:
               what the game's generator does (size = k*10^(-0.164 m), which crowds the faint
               end into a few values). At 24 bytes per magnitude the resolution is 0.04 mag
               across the whole range, and the shader decodes it back to a magnitude.
-  colour      Hue only, peak-normalised, so brightness lives in one place. Derived from B-V
+  colour      Hue only, so brightness lives in one place: stored with its brightest channel
+              at 255 for the bytes' precision, and brought to unit luminance in Star.vert,
+              since a colour at its peak is dimmer than white by its own hue. Derived from B-V
               through an effective temperature and a blackbody spectrum integrated against
               the CIE 1931 observer, rather than the piecewise fit the game uses - which
               reads the V-I column as though it were B-V, and returns black outside

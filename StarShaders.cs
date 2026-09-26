@@ -253,7 +253,7 @@ internal static class StarShaders
         {
             vec2 px = (uv - sun.xy) * vec2(global.camera.screenWidth, global.camera.screenHeight);
             if (dot(px, px) >= sun.z * sun.z) return tap;
-            float luma = dot(tap, vec3(0.2126, 0.7152, 0.0722));
+            float luma = dot(tap, rsLuma);
             float limit = rsBloomWhite * weight;
             return luma > limit ? tap * (limit / luma) : tap;
         }
@@ -500,6 +500,9 @@ internal static class StarShaders
         const float rsBrightness = 0.886;
         // One display level out of 8-bit, the level below which a wing cannot show.
         const float rsDisplayLevels = 255.0;
+        // Luminance, Rec. 709: near enough what the V band measures, and what the engine's bloom
+        // thresholds on. A colour at unit luminance carries hue and nothing of brightness.
+        const vec3 rsLuma = vec3(0.2126, 0.7152, 0.0722);
         // The sprites are fans of eight triangles, corners on a circle; this is where their flat
         // edges come in to, as a share of it: cos(22.5 deg).
         const float rsFanInradius = 0.92387953;
@@ -1115,9 +1118,13 @@ internal static class StarShaders
                 return;
             }
 
-            // Unpack the instance data
+            // Unpack the instance data. The catalogue stores each colour with its brightest
+            // channel at 1, which keeps the bytes' precision; here it is brought to unit
+            // luminance instead, so the magnitude alone sets how bright a star is. Left at its
+            // peak, every coloured star was dimmed by its own colour - the Sun by 0.11 mag, blue
+            // stars and red giants by 0.4 to 0.6.
             vec4 packedData = unpackRGBA(packed);
-            outColor = packedData.xyz;
+            outColor = packedData.xyz / max(dot(packedData.xyz, rsLuma), 1e-3);
 
             // The instance carries the star's true position in parsecs rather than a direction,
             // so both where it appears and how bright it looks follow from where the observer
@@ -1484,9 +1491,10 @@ internal static class StarShaders
                        * edgeFade;
 
             // The engine has already scaled this colour by its own phase term. Ours is in the
-            // magnitude, so take the hue and leave the brightness alone.
-            float hue = max(max(inColor.r, inColor.g), inColor.b);
-            vec3 tint = hue > 1e-4f ? inColor / hue : vec3(1.0f);
+            // magnitude, so take the hue at unit luminance and leave the brightness to that. At
+            // its brightest channel, as it was, a coloured planet was dimmed by its own colour.
+            float luma = dot(inColor, rsLuma);
+            vec3 tint = luma > 1e-4f ? inColor / luma : vec3(1.0f);
 
             // The core is clamped, to what the engine's blooms may see (rsBloomWhite); the rays
             // are not - they are already faint, and a ceiling meant for a saturating point would
