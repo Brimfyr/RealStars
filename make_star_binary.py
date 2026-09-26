@@ -1,5 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Build the star binary from Hipparcos (CDS I/239), in the format the game's own loader reads.
+"""Build the star binary from AT-HYG and Hipparcos, in the format the game's own loader reads, with
+each star's space velocity after it so the mod can carry the sky to the game's date.
+
+Sources:
+  AT-HYG v3.2, magnitude-10 subset (astronexus, CC BY-SA 4.0): which stars, and their V, B-V,
+      distance, proper motion and radial velocity. Tycho-2 merged with HYG, with Gaia DR3 distances
+      and motions for most stars.
+  Hipparcos main catalogue (ESA 1997, CDS I/239): positions, for every star it has.
+
+Why positions come from Hipparcos: AT-HYG's are not all at one epoch. Checked against Hipparcos,
+80,453 of its Hipparcos stars are at J2000, but 2,652 are still at J1991.25 - Alpha Centauri,
+Arcturus, Sirius and Procyon among them, Alpha Cen A 32" out - and 232 match neither. Hipparcos
+gives all of them at J1991.25 to a milliarcsecond. The 40,231 stars Hipparcos lacks keep AT-HYG's
+Tycho-2 positions, which are J2000.
 
 The shipped catalogue carries almost no brightness information. Measured across its 99,038
 stars: the size byte runs 17-239 but its 90th percentile is 17, and what variation exists
@@ -9,11 +22,11 @@ stars - 93.6% of the sky - are floored in both, so they render identically. End 
 range is 70:1, about 4.6 magnitudes, where the real sky from Sirius to magnitude 9 spans
 13,000:1.
 
-So this writes its own, with three changes:
+So this writes its own, with four changes:
 
   brightness  The byte encodes V magnitude LINEARLY rather than as a sprite size, which is
               what the game's generator does (size = k*10^(-0.164 m), which crowds the faint
-              end into a few values). At 24 bytes per magnitude the resolution is 0.04 mag
+              end into a few values). At 10 bytes per magnitude the resolution is 0.1 mag
               across the whole range, and the shader decodes it back to a magnitude.
   colour      Hue only, so brightness lives in one place: stored with its brightest channel
               at 255 for the bytes' precision, and brought to unit luminance in Star.vert,
@@ -25,10 +38,17 @@ So this writes its own, with three changes:
   frame       True J2000 ecliptic, Z-up, matching the shipped binary. The game's own
               `generatestarbinary` writes Y-up equatorial, so anything it produces is
               misoriented against the solar system.
+  date        Positions at the game's time zero, and each star's velocity after them, so the
+              mod can move the sky on as the game's clock runs. Kapteyn's star, the fastest
+              here, moves 8.6" a year: 5' between Hipparcos's epoch and the game's.
 
-Record layout, from ModLibrary.LoadStarBinaries: int32 count, then per star float3 direction
-(normalised by the loader), byte scale, byte R, G, B.
+Layout: int32 count, then per star float3 position (pc), byte absolute magnitude, byte R, G, B -
+the record ModLibrary.LoadStarBinaries reads, so the game's own reader still loads the file,
+flat. Then the motion block, which that reader never reaches: the tag "RSM1", float64 epoch of the
+positions (Julian year), then per star float3 velocity in parsecs per Julian year, same frame.
 """
+import csv
+import gzip
 import math
 import os
 import struct
@@ -36,6 +56,9 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "assets")
+# https://www.astronexus.com/downloads/catalogs/athyg_32_reduced_m10.csv.gz
+ATHYG = os.path.join(OUT, "athyg_32_reduced_m10.csv.gz")
+# https://cdsarc.cds.unistra.fr/ftp/I/239/hip_main.dat
 HIP = r"C:\Users\gunsh\Documents\Kitten Space Agency\Proxima Centauri\_build\hip_main.dat"
 OUT_NAME = "RealStars.bin"
 
@@ -50,73 +73,127 @@ OUT_NAME = "RealStars.bin"
 # that would still be right if you left.
 MAG_ABS_FAINT = 16.5     # absolute magnitude stored as byte 1
 BYTES_PER_MAG = 10.0     # 0.1 mag per step, spanning -8.9 to +16.5
+MAG_ABS_BRIGHT = MAG_ABS_FAINT - 254.0 / BYTES_PER_MAG
 MAG_LIMIT = 9.0          # catalogue cut, on APPARENT magnitude as seen from here
 
-# A star with no usable parallax has no known distance. It goes out here, far enough that it
-# cannot parallax noticeably, with an absolute magnitude chosen so that its apparent magnitude
-# from the solar system comes out exactly right anyway.
+# A star with no distance goes out here, far enough that it cannot parallax noticeably, with an
+# absolute magnitude chosen so that its apparent magnitude from the solar system comes out exactly
+# right anyway.
 UNKNOWN_DISTANCE_PC = 1000.0
 
 OBLIQUITY = math.radians(23.4392911)   # J2000 mean obliquity
-BV_DEFAULT = 0.65                      # solar-ish, for the few stars with no B-V
+BV_DEFAULT = 0.65                      # solar-ish, for the stars with no B-V
 
-# Hipparcos columns, verified against stars with known values (Sirius, Capella, Betelgeuse)
-C_VMAG, C_RA, C_DEC, C_PLX, C_BV = 5, 8, 9, 11, 37
+# Game time zero: every orbit in Core's Astronomicals.xml is a JPL Horizons state at this Julian day.
+GAME_EPOCH = 2000.0 + (2461009.5 - 2451545.0) / 365.25    # 2025.9124, 2025-11-30 00:00
+HIP_EPOCH = 1991.25
+TYCHO_EPOCH = 2000.0
+
+MAS = math.pi / (180.0 * 3600.0 * 1000.0)   # milliarcseconds to radians
+KMS_TO_PC_PER_YR = 365.25 * 86400.0 / 3.0856775814913673e13
+MOTION_TAG = b"RSM1"
 
 
-def parse():
-    """Vmag, RA/Dec in degrees, parallax in mas, B-V - for every star with a usable row."""
-    vmag, ra, dec, plx, bv, no_bv = [], [], [], [], [], 0
+def num(text, default=math.nan):
+    try:
+        return float(text)
+    except ValueError:
+        return default
+
+
+def hipparcos_positions():
+    """HIP number -> (RA, Dec) in degrees, ICRS at J1991.25, for every star with a solution."""
+    pos = {}
     with open(HIP, encoding="latin-1") as f:
         for line in f:
             p = line.split("|")
             if len(p) < 42:
                 continue
             try:
-                v = float(p[C_VMAG])
-                a = float(p[C_RA])
-                d = float(p[C_DEC])
+                pos[int(p[1])] = (float(p[8]), float(p[9]))
             except ValueError:
-                continue                      # no magnitude or no astrometric solution
-            if v > MAG_LIMIT:
+                continue                      # no astrometric solution
+    return pos
+
+
+def parse():
+    """Every AT-HYG star to MAG_LIMIT but the Sun, with its position swapped for Hipparcos's where
+    Hipparcos has one."""
+    hip = hipparcos_positions()
+    cols = {k: [] for k in ("v", "ra", "dec", "epoch", "dist", "bv", "pmra", "pmdec", "rv")}
+    from_hip = no_bv = no_dist = no_pm = no_rv = 0
+    with gzip.open(ATHYG, "rt", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            v = num(r["mag"])
+            if not v <= MAG_LIMIT or r["id"] == "1":       # row 1 is the Sun, which goes in below
                 continue
-            try:
-                c = float(p[C_BV])
-            except ValueError:
-                c, no_bv = BV_DEFAULT, no_bv + 1
-            try:
-                pl = float(p[C_PLX])
-            except ValueError:
-                pl = 0.0
-            vmag.append(v); ra.append(a); dec.append(d); plx.append(pl); bv.append(c)
-    print(f"{len(vmag)} stars to V={MAG_LIMIT} ({no_bv} without a B-V, defaulted to {BV_DEFAULT})")
-    return (np.array(vmag), np.array(ra), np.array(dec), np.array(plx), np.array(bv))
+            h = int(r["hip"]) if r["hip"] else None
+            if h in hip:
+                ra, dec = hip[h]
+                epoch = HIP_EPOCH
+                from_hip += 1
+            else:
+                ra, dec = float(r["ra"]) * 15.0, float(r["dec"])   # AT-HYG gives RA in hours
+                epoch = TYCHO_EPOCH
+            bv = num(r["ci"])
+            if math.isnan(bv):
+                bv, no_bv = BV_DEFAULT, no_bv + 1
+            dist = num(r["dist"], 0.0)
+            if not dist > 0.0:
+                dist, no_dist = math.nan, no_dist + 1
+            pmra, pmdec = num(r["pm_ra"]), num(r["pm_dec"])
+            if math.isnan(pmra) or math.isnan(pmdec):
+                pmra, pmdec, no_pm = 0.0, 0.0, no_pm + 1
+            rv = num(r["rv"])
+            if math.isnan(rv):
+                rv, no_rv = 0.0, no_rv + 1
+            for k, x in zip(cols, (v, ra, dec, epoch, dist, bv, pmra, pmdec, rv)):
+                cols[k].append(x)
+    n = len(cols["v"])
+    print(f"{n} stars to V={MAG_LIMIT}: positions {from_hip} Hipparcos (J{HIP_EPOCH}), "
+          f"{n - from_hip} Tycho-2 (J{TYCHO_EPOCH:.0f})")
+    print(f"  defaulted: {no_bv} B-V to {BV_DEFAULT}, {no_pm} proper motions and {no_rv} radial "
+          f"velocities to zero; {no_dist} with no distance")
+    return {k: np.array(x) for k, x in cols.items()}
 
 
-def directions(ra_deg, dec_deg):
+def to_ecliptic(v):
     """Equatorial J2000 to ecliptic, Z-up: the frame the solar system is built in, so the
     sky sits square with the planets' orbits rather than tilted by the obliquity."""
-    ra, dec = np.radians(ra_deg), np.radians(dec_deg)
-    x = np.cos(dec) * np.cos(ra)
-    y = np.cos(dec) * np.sin(ra)
-    z = np.sin(dec)
     c, s = math.cos(OBLIQUITY), math.sin(OBLIQUITY)
-    return np.stack([x, y * c + z * s, -y * s + z * c], axis=1)
+    return np.stack([v[:, 0], v[:, 1] * c + v[:, 2] * s, -v[:, 1] * s + v[:, 2] * c], axis=1)
 
 
-def distances(plx_mas, vmag):
-    """Distance in parsecs from parallax, and the absolute magnitude that follows.
+def distances(dist, vmag):
+    """Distance in parsecs, and the absolute magnitude that follows.
 
-    Hipparcos parallaxes are noisy enough that some come out zero or negative, which is a
-    measurement artefact rather than a star behind the observer. Those have no usable distance,
-    so they go to a nominal far shell with an absolute magnitude that reproduces the apparent
-    one from here: correct where we stand, and honest about not knowing how far away it is.
+    A star with no distance goes to a nominal far shell with an absolute magnitude that
+    reproduces the apparent one from here: correct where we stand, and honest about not knowing
+    how far away it is. Three supergiants with poor Gaia parallaxes come out brighter than the
+    byte reaches; they are brought in until they fit, which keeps their magnitude from here
+    exact at the cost of a distance that was already doubtful.
     """
-    known = plx_mas > 0.5                       # below this the distance error exceeds the value
-    dist = np.where(known, 1000.0 / np.maximum(plx_mas, 1e-6), UNKNOWN_DISTANCE_PC)
-    dist = np.clip(dist, 0.05, 100000.0)
+    known = ~np.isnan(dist)
+    dist = np.where(known, dist, UNKNOWN_DISTANCE_PC)
     absmag = vmag - 5.0 * np.log10(dist / 10.0)
-    return dist, absmag, known
+    fits = np.clip(absmag, MAG_ABS_BRIGHT, MAG_ABS_FAINT)
+    moved = int((fits != absmag).sum())
+    dist = 10.0 * 10.0 ** ((vmag - fits) / 5.0)
+    return dist, fits, known, moved
+
+
+def motion(ra_deg, dec_deg, dist, pmra, pmdec, rv):
+    """Unit direction and space velocity (parsecs per Julian year), equatorial.
+
+    Tangential from the proper motion at the distance the star is placed at, so that a star
+    with no known distance still crosses the sky at its measured rate as seen from here.
+    """
+    ra, dec = np.radians(ra_deg), np.radians(dec_deg)
+    r = np.stack([np.cos(dec) * np.cos(ra), np.cos(dec) * np.sin(ra), np.sin(dec)], axis=1)
+    east = np.stack([-np.sin(ra), np.cos(ra), np.zeros_like(ra)], axis=1)
+    north = np.stack([-np.sin(dec) * np.cos(ra), -np.sin(dec) * np.sin(ra), np.cos(dec)], axis=1)
+    tangential = (pmra[:, None] * east + pmdec[:, None] * north) * MAS * dist[:, None]
+    return r, tangential + (rv * KMS_TO_PC_PER_YR)[:, None] * r
 
 
 # ------------------------------------------------------------------------------- colour
@@ -167,15 +244,24 @@ SUN_BV = 0.65            # its B-V, which puts it at 5772 K through the same col
 
 
 def main():
-    vmag, ra, dec, plx, bv = parse()
-    dirs = directions(ra, dec)
-    dist, absmag, known = distances(plx, vmag)
+    s = parse()
+    vmag, bv = s["v"], s["bv"]
+    dist, absmag, known, moved = distances(s["dist"], vmag)
+    dirs, vel = motion(s["ra"], s["dec"], dist, s["pmra"], s["pmdec"], s["rv"])
+
+    # Straight-line motion from each position's own epoch to the game's: exact for the linear
+    # model, which holds for millennia, and it carries the distance too, so a star closing on
+    # us brightens as the shader works out its magnitude.
+    positions = to_ecliptic(dirs * dist[:, None] + vel * (GAME_EPOCH - s["epoch"])[:, None])
+    vel = to_ecliptic(vel)
 
     # The Sun goes in the catalogue like any other star, at the origin. Once it is too far to
     # be drawn as a sphere it is a point source like the rest, and putting it here means it is
     # drawn by the same shader, with the same profile, and brightens correctly as you approach
     # - rather than by a flare pass whose size is floored and whose colour fades with radius.
-    dirs = np.vstack([dirs, [0.0, 0.0, 0.0]])
+    # It is the frame's origin, so it never moves.
+    positions = np.vstack([positions, [0.0, 0.0, 0.0]])
+    vel = np.vstack([vel, [0.0, 0.0, 0.0]])
     dist = np.append(dist, 0.0)
     absmag = np.append(absmag, SUN_ABS_MAG)
     vmag = np.append(vmag, -26.74)
@@ -184,10 +270,7 @@ def main():
 
     rgb, T = colours(bv)
 
-    positions = dirs * dist[:, None]                       # parsecs, ecliptic Z-up; Sun at 0,0,0
     scale = np.clip(np.round((MAG_ABS_FAINT - absmag) * BYTES_PER_MAG) + 1, 1, 255).astype(np.uint8)
-    clipped = int(((MAG_ABS_FAINT - absmag) * BYTES_PER_MAG + 1 > 255).sum()
-                  + ((MAG_ABS_FAINT - absmag) * BYTES_PER_MAG + 1 < 1).sum())
     rgb8 = np.clip(np.round(rgb * 255.0), 0, 255).astype(np.uint8)
 
     os.makedirs(OUT, exist_ok=True)
@@ -200,19 +283,32 @@ def main():
         rec["s"] = scale
         rec["r"], rec["g"], rec["b"] = rgb8[:, 0], rgb8[:, 1], rgb8[:, 2]
         f.write(rec.tobytes())
+        f.write(MOTION_TAG)
+        f.write(struct.pack("<d", GAME_EPOCH))
+        f.write(vel.astype("<f4").tobytes())
 
-    print(f"{OUT_NAME}: {len(vmag)} stars including the Sun, {os.path.getsize(path)/1e6:.1f} MB")
+    print(f"{OUT_NAME}: {len(vmag)} stars including the Sun, {os.path.getsize(path)/1e6:.1f} MB, "
+          f"positions at {GAME_EPOCH:.4f}")
     print(f"  apparent magnitudes {vmag.min():.2f} to {vmag.max():.2f} from here")
     print(f"  absolute magnitudes {absmag.min():.2f} to {absmag.max():.2f} "
-          f"-> bytes {scale.max()} to {scale.min()} ({clipped} clipped)")
-    print(f"  distances {dist.min():.2f} to {dist.max():.0f} pc; "
-          f"{int(known.sum())} measured, {int((~known).sum())} parked at {UNKNOWN_DISTANCE_PC:.0f} pc")
-    print(f"  nearest: {', '.join(f'{d:.2f} pc' for d in np.sort(dist[known])[:5])}")
+          f"-> bytes {scale.max()} to {scale.min()} ({moved} moved in to fit)")
+    print(f"  distances {dist[:-1].min():.2f} to {dist.max():.0f} pc; "
+          f"{int(known.sum()) - 1} measured, {int((~known).sum())} parked at {UNKNOWN_DISTANCE_PC:.0f} pc")
+    print(f"  nearest: {', '.join(f'{d:.2f} pc' for d in np.sort(dist[:-1][known[:-1]])[:5])}")
     print(f"  temperatures {T.min():.0f} K to {T.max():.0f} K")
     for name, v in (("brighter than 1", 1.0), ("naked eye (6)", 6.0), (f"all (<= {MAG_LIMIT})", MAG_LIMIT)):
         print(f"  {name:>16}: {int((vmag <= v).sum()):6d} stars")
 
-    # What the effect actually looks like: the shift a star of this distance shows between
+    # How fast the sky changes: the angular rate as seen from the Sun.
+    r = np.linalg.norm(positions[:-1], axis=1)
+    radial = np.sum(vel[:-1] * positions[:-1], axis=1) / r
+    rate = np.sqrt(np.maximum(np.sum(vel[:-1] ** 2, axis=1) - radial ** 2, 0.0)) / r / MAS / 1000.0
+    order = np.argsort(-rate)
+    fastest = ", ".join(f'{rate[i]:.2f}"/yr (V {vmag[i]:.2f})' for i in order[:3])
+    print(f"\n  fastest across the sky: {fastest}")
+    print(f"  moving more than 1\"/yr: {int((rate > 1.0).sum())}, more than 0.1\"/yr: {int((rate > 0.1).sum())}")
+
+    # What parallax actually looks like: the shift a star of this distance shows between
     # opposite sides of the observer's travels.
     print("\n  parallax at the edge of the solar system (Pluto, 39 AU from the Sun):")
     for label, d in (("Proxima-like (1.3 pc)", 1.3), ("Sirius (2.6 pc)", 2.64),

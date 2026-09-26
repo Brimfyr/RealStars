@@ -146,6 +146,14 @@ public class ModMain
         else
             ShaderShadow.Log("WARN: Program.UpdateShaderData not found; the Sun keeps its stock sprite");
 
+        // The stars' own motion. The date is only known once a save is open, well after the
+        // catalogue loads, so the sky is moved on from the same per-frame update.
+        if (updateShaderData != null && Patches.StarBinary != null)
+            harmony.Patch(updateShaderData,
+                postfix: new HarmonyMethod(typeof(StarMotion), nameof(StarMotion.UpdateShaderDataPostfix)));
+        else if (Patches.StarBinary != null)
+            ShaderShadow.Log("WARN: Program.UpdateShaderData not found; the stars stay at the game's start date");
+
         ShaderShadow.Log("installed (star shader redirect active"
                          + (Patches.StarBinary != null ? ", own catalogue" : ", stock catalogue")
                          + (sizeScale != null ? ", photometric planets)" : ")"));
@@ -225,7 +233,8 @@ internal static class Patches
     /// and the distance that sets how bright it looks from there.
     ///
     /// The public AddInstance normalises too, so this uses the overload that takes the instance
-    /// struct whole.
+    /// struct whole. The velocities after the records go to StarMotion, which moves the stars on
+    /// to the game's date.
     /// </summary>
     public static bool LoadStarBinariesPrefix(object __instance, object starTechnique)
     {
@@ -257,26 +266,49 @@ internal static class Patches
             int count = reader.ReadInt32();
             var args = new object[2];
             args[0] = viewport;
+            var start = new float[3 * count];
+            var packedAll = new uint[count];
 
             for (int i = 0; i < count; i++)
             {
                 float x = reader.ReadSingle(), y = reader.ReadSingle(), z = reader.ReadSingle();
                 byte magnitude = reader.ReadByte();
                 byte r = reader.ReadByte(), g = reader.ReadByte(), b = reader.ReadByte();
+                // Same packing the game uses: colour in the top three bytes, magnitude in the low one.
+                uint packed = ((uint)b << 24) | ((uint)g << 16) | ((uint)r << 8) | magnitude;
+                start[3 * i] = x;
+                start[3 * i + 1] = y;
+                start[3 * i + 2] = z;
+                packedAll[i] = packed;
 
                 object sprite = Activator.CreateInstance(_spriteType)!;
                 _spritePosition!.SetValue(sprite, _float3Ctor!.Invoke(new object[] { x, y, z }));
-                // Same packing the game uses: colour in the top three bytes, magnitude in the low one.
-                _spritePacked!.SetValue(sprite, ((uint)b << 24) | ((uint)g << 16) | ((uint)r << 8) | magnitude);
+                _spritePacked!.SetValue(sprite, packed);
                 args[1] = sprite;
                 _addInstance!.Invoke(starTechnique, args);
             }
 
+            // Each star's velocity follows the records, where the game's own reader never looks:
+            // a tag, the epoch the positions are at, then a float3 per star in parsecs per year.
+            float[]? velocity = null;
+            double epoch = StarMotion.GameEpochYear;
+            if (stream.Length - stream.Position == 4 + 8 + 12L * count
+                && reader.ReadBytes(4).AsSpan().SequenceEqual("RSM1"u8))
+            {
+                epoch = reader.ReadDouble();
+                velocity = new float[3 * count];
+                for (int j = 0; j < velocity.Length; j++)
+                    velocity[j] = reader.ReadSingle();
+            }
+
             if (!_loadedStars)
             {
-                ShaderShadow.Log($"loaded {count} stars as 3D positions; parallax is live");
+                ShaderShadow.Log($"loaded {count} stars as 3D positions; parallax is live"
+                                 + (velocity == null ? "; no motion block, so they stay put" : ""));
                 _loadedStars = true;
             }
+            if (velocity != null)
+                StarMotion.Attach(starTechnique, viewport, start, packedAll, velocity, epoch);
             return false;                                  // ours is loaded; skip the game's reader
         }
         catch (Exception ex)

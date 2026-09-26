@@ -54,7 +54,7 @@ Copy-Item "$proj\bin\Release\RealStars.dll" $stage
 Copy-Item "$proj\mod.toml" $stage
 Copy-Item "$proj\README.md" $stage
 Copy-Item "$proj\LICENSE" $stage
-# The Hipparcos acknowledgement travels with the catalogue it covers.
+# The catalogue's licence and acknowledgements travel with it.
 Copy-Item "$proj\CREDITS.md" $stage
 foreach ($name in $assets) {
     $src = Join-Path "$proj\assets" $name

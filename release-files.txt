@@ -2,6 +2,6 @@
 # Read by BOTH package.ps1 (player zip) and deploy.ps1 (local install), so they always match.
 # Anything in assets/ that is NOT listed here is a converter source or a stale output and never ships.
 
-# The star catalogue, built from Hipparcos by make_star_binary.py. The shaders decode the
-# magnitude byte with the convention that script writes, so the two travel together.
+# The star catalogue, built from AT-HYG and Hipparcos by make_star_binary.py. The shaders decode
+# the magnitude byte with the convention that script writes, so the two travel together.
 RealStars.bin

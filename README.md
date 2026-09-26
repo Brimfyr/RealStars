@@ -8,9 +8,10 @@ No game files are modified. At launch the mod builds patched copies of the game'
 
 ### Stars
 
-- 83,337 stars from the Hipparcos catalogue, to magnitude 9, coloured from their B−V index
+- 123,568 stars from the AT-HYG catalogue, to magnitude 9, coloured from their B−V index
 - Brightness from magnitude, drawn with a realistic point spread function
 - Parallax: stars sit at their real distances and shift as you travel
+- Proper motion: stars are placed for the game's date and move on as time passes
 - Twinkling through atmospheres, stronger and more colourful toward the horizon, following simulation time
 
 ### Planets
@@ -52,10 +53,10 @@ To uninstall, delete `mods\RealStars`.
 
 ## Building
 
-`deploy.ps1` builds the mod and installs it into your mods folder. `package.ps1 -Version x.y.z -GameBuild vYYYY.M.D.NNNN` builds a release archive in `dist\`. Set `StarMapDir` to your StarMap folder. `make_star_binary.py` rebuilds the star catalogue from the Hipparcos main catalogue (`hip_main.dat`).
+`deploy.ps1` builds the mod and installs it into your mods folder. `package.ps1 -Version x.y.z -GameBuild vYYYY.M.D.NNNN` builds a release archive in `dist\`. Set `StarMapDir` to your StarMap folder. `make_star_binary.py` rebuilds the star catalogue from AT-HYG v3.2 (`athyg_32_reduced_m10.csv.gz`, in `assets`) and the Hipparcos main catalogue (`hip_main.dat`).
 
 ## Credits
 
-- Star catalogue built from the Hipparcos Catalogue (ESA 1997, ESA SP-1200), retrieved from [VizieR](https://vizier.cds.unistra.fr/) (CDS, Strasbourg), catalogue I/239.
+- Star catalogue built from [AT-HYG](https://www.astronexus.com/projects/at-hyg) v3.2 by David Nash (CC BY-SA 4.0), with positions from the Hipparcos Catalogue (ESA 1997, ESA SP-1200), retrieved from [VizieR](https://vizier.cds.unistra.fr/) (CDS, Strasbourg), catalogue I/239. Most distances and motions in AT-HYG come from ESA's Gaia DR3.
 
-The code is MIT. [CREDITS.md](CREDITS.md) gives the source and terms of the shipped catalogue.
+The code is MIT; the star catalogue is CC BY-SA 4.0. [CREDITS.md](CREDITS.md) gives its sources and terms.

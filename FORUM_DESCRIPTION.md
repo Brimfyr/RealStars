@@ -14,11 +14,13 @@ No game files are modified. At launch the mod builds patched copies of the game'
 
 \[LIST]
 
-\[\*]83,337 stars from the Hipparcos catalogue, to magnitude 9, coloured from their B−V index
+\[\*]123,568 stars from the AT-HYG catalogue, to magnitude 9, coloured from their B−V index
 
 \[\*]Brightness from magnitude, drawn with a realistic point spread function
 
 \[\*]Parallax: stars sit at their real distances and shift as you travel
+
+\[\*]Proper motion: stars are placed for the game's date and move on as time passes
 
 \[\*]Twinkling through atmospheres, stronger and more colourful toward the horizon, following simulation time
 
@@ -108,15 +110,15 @@ To uninstall, delete \[ICODE]mods\\RealStars\[/ICODE].
 
 \[HEADING=2]Building\[/HEADING]
 
-\[ICODE]deploy.ps1\[/ICODE] builds the mod and installs it into your mods folder. \[ICODE]package.ps1 -Version x.y.z -GameBuild vYYYY.M.D.NNNN\[/ICODE] builds a release archive in \[ICODE]dist\[/ICODE]. Set \[ICODE]StarMapDir\[/ICODE] to your StarMap folder. \[ICODE]make\_star\_binary.py\[/ICODE] rebuilds the star catalogue from the Hipparcos main catalogue (\[ICODE]hip\_main.dat\[/ICODE]).
+\[ICODE]deploy.ps1\[/ICODE] builds the mod and installs it into your mods folder. \[ICODE]package.ps1 -Version x.y.z -GameBuild vYYYY.M.D.NNNN\[/ICODE] builds a release archive in \[ICODE]dist\[/ICODE]. Set \[ICODE]StarMapDir\[/ICODE] to your StarMap folder. \[ICODE]make\_star\_binary.py\[/ICODE] rebuilds the star catalogue from AT-HYG v3.2 (\[ICODE]athyg\_32\_reduced\_m10.csv.gz\[/ICODE], in \[ICODE]assets\[/ICODE]) and the Hipparcos main catalogue (\[ICODE]hip\_main.dat\[/ICODE]).
 
 \[HEADING=2]Credits\[/HEADING]
 
 \[LIST]
 
-\[\*]Star catalogue built from the Hipparcos Catalogue (ESA 1997, ESA SP-1200), retrieved from \[URL='https://vizier.cds.unistra.fr/']VizieR\[/URL] (CDS, Strasbourg), catalogue I/239.
+\[\*]Star catalogue built from \[URL='https://www.astronexus.com/projects/at-hyg']AT-HYG\[/URL] v3.2 by David Nash (CC BY-SA 4.0), with positions from the Hipparcos Catalogue (ESA 1997, ESA SP-1200), retrieved from \[URL='https://vizier.cds.unistra.fr/']VizieR\[/URL] (CDS, Strasbourg), catalogue I/239. Most distances and motions in AT-HYG come from ESA's Gaia DR3.
 
 \[/LIST]
 
-The code is MIT. \[URL='https://github.com/Brimfyr/RealStars/blob/main/CREDITS.md']CREDITS.md\[/URL] gives the source and terms of the shipped catalogue.
+The code is MIT; the star catalogue is CC BY-SA 4.0. \[URL='https://github.com/Brimfyr/RealStars/blob/main/CREDITS.md']CREDITS.md\[/URL] gives its sources and terms.
 
