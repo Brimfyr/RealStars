@@ -23,18 +23,20 @@ No game files are modified. At launch the mod builds patched copies of the game'
 
 ### The Sun
 
-- Drawn as a star at every distance, at its real angular size, blending into the 3D sphere up close
+- Drawn as a star at every distance, at its real angular size, shrinking into the 3D sphere up close
 - Sphere at its real size and photosphere colour, with limb darkening
 - Dims as it fills more of the screen
 - Replaces the stock sun sprite and lens flare
 
 ### Occlusion and starbursts
 
-- Stars, planets and the Sun fade behind planets, atmospheres and vessels
-- Starbursts modelled on the human eye, on the Sun and on planets brighter than magnitude −3
+- Stars, planets and the Sun fade behind planets, atmospheres and vessels, and the Sun's starburst behind clouds
+- Starbursts modelled on a simulation of the human eye: about a thousand fine needles with coloured fringes, on the Sun, the bright planets and the brightest stars
+- A soft glow around bright sources, the eye's veiling glare, gives the Sun a corona
+- The Sun's starburst comes from the part of the Sun still in view, in the colour of the sunlight reaching you
 - Starbursts fade as their source is covered or leaves the screen
 - The Sun's starburst is drawn over everything else
-- Starbursts follow the game's lens flare setting
+- Starbursts follow the game's lens flare setting, and the game's bloom settings no longer bury them
 
 ## Installation
 
@@ -58,5 +60,6 @@ To uninstall, delete `mods\RealStars`.
 ## Credits
 
 - Star catalogue built from [AT-HYG](https://www.astronexus.com/projects/at-hyg) v3.2 by David Nash (CC BY-SA 4.0), with positions from the Hipparcos Catalogue (ESA 1997, ESA SP-1200), retrieved from [VizieR](https://vizier.cds.unistra.fr/) (CDS, Strasbourg), catalogue I/239. Most distances and motions in AT-HYG come from ESA's Gaia DR3.
+- Starbursts after T. Ritschel, M. Ihrke, J. R. Frisvad, J. Coppens, K. Myszkowski and H.-P. Seidel, "Temporal Glare: Real-Time Dynamic Simulation of the Scattering in the Human Eye", Eurographics 2009.
 
 The code is MIT; the star catalogue is CC BY-SA 4.0. [CREDITS.md](CREDITS.md) gives its sources and terms.
