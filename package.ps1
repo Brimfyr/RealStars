@@ -1,13 +1,13 @@
 # Build Real Stars and produce an installable zip for players.
 #
-#   .\package.ps1                         # version 1.0.0, game build read from your settings.toml
-#   .\package.ps1 -Version 1.0.0 -GameBuild v2026.9.22.5482
+#   .\package.ps1                         # version 1.1.0, game build read from your settings.toml
+#   .\package.ps1 -Version 1.1.0 -GameBuild v2026.9.22.5482
 #
 # Output: dist\RealStars-v<Version>-ksa<GameBuild>.zip (+ .sha256). The zip's root is a
 # RealStars\ folder, because KSA uses the folder name as the mod id. Ships exactly the files in
 # release-files.txt; StarMap.API/0Harmony are NOT included (the StarMap launcher provides them).
 param(
-    [string]$Version = "1.0.0",
+    [string]$Version = "1.1.0",
     [string]$GameBuild = ""
 )
 $ErrorActionPreference = "Stop"

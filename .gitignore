@@ -13,3 +13,8 @@ assets/
 # Glare model outputs (glare_sim.py)
 glare_ref.npz
 glare_ref.png
+
+# Screenshot and video sources: the JPGs and GIFs made from them are what the repository keeps.
+content/*.png
+!content/icon.png
+content/*.mp4
