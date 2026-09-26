@@ -34,6 +34,7 @@ internal static class StarShaders
     /// </summary>
     public static readonly string[] Redirected =
         { "Sun/Sun.frag", "PostProcess/sunbloom.frag", "PostProcess/sunbloom_merge.comp",
+          "PostProcess/sunbloom_blur.comp",
           "PostProcess/kawase_downsample.comp", "PostProcess/kawase_downsample_with_thresholds.comp" };
 
     /// <summary>
@@ -137,7 +138,8 @@ internal static class StarShaders
         // The Sun's disc and its glare are our sprite's now, at the real angular size and the
         // real magnitude, so the pass has nothing left to contribute. Only the sun's own term
         // goes: the occlusion output below is untouched, so the lens flare still knows whether
-        // the Sun is in view, and the spokes and ghosts in sunbloom_blur.comp are left alone.
+        // the Sun is in view. The spokes in sunbloom_blur.comp are left alone; its ghosts go,
+        // further down.
         // The Sun's starburst is drawn here, over the finished image, rather than with the
         // stars. It is scatter inside whoever is looking, so it lies over everything they are
         // looking at - and drawn with the stars it went UNDER the first thing in front of the
@@ -156,6 +158,14 @@ internal static class StarShaders
         ("PostProcess/sunbloom.frag",
          "    float sunPower = innerSun * innerSunScalar + outerSun * sunData.outerSunColorScalar;",
          "    float sunPower = 0.;  // Real Stars: the Sun is drawn as the star it is"),
+
+        // And the ghost orbs go. They are a camera lens's reflections between its elements, and
+        // the glare here is an eye's, which has none. The nearest pair sat at 0.85 of the Sun's
+        // offset from the screen centre, the size of its disc, and read as a second star beside
+        // it once the blooms stopped burying everything round the Sun. The spokes stay.
+        ("PostProcess/sunbloom_blur.comp",
+         "        flareColor += lensFlareColor * pctvis;",
+         "        // Real Stars: no ghost orbs - an eye has no lens elements to reflect between."),
 
         // The engine's two blooms - Global Bloom and Threshold Bloom in the settings - each start
         // with one of these downsamples, and the Sun reached both at 24, burying its needles in
@@ -458,6 +468,9 @@ internal static class StarShaders
         const float rsBrightness = 0.886;
         // One display level out of 8-bit, the level below which a wing cannot show.
         const float rsDisplayLevels = 255.0;
+        // The sprites are fans of eight triangles, corners on a circle; this is where their flat
+        // edges come in to, as a share of it: cos(22.5 deg).
+        const float rsFanInradius = 0.92387953;
         // The most the engine's blooms may see of any of our sources. Past about 1.2 the default
         // tonemap is already white (Hable at exposure 1.25), so whatever a core writes above that
         // shows only through the blooms: the threshold bloom adds a third of everything over 3
@@ -1134,7 +1147,11 @@ internal static class StarShaders
             // taken to nothing over the last fraction of the quad - renders the same whatever
             // the glare is doing. Tying the two together made the halo change as the glare
             // went, which is not a thing the halo should know about.
-            float spritePx = discPx + max(glowPx, burstPx);
+            // The quad is a fan of eight triangles with its corners on a circle, so its flat
+            // edges come in to cos(22.5 deg) of it. With the corners on the content's own radius,
+            // a close Sun's white ring - and past that its disc - was cut to an octagon; the
+            // corners go that much further out instead, so the whole circle is inside.
+            float spritePx = (discPx + max(glowPx, burstPx)) / rsFanInradius;
             glareLevel *= 1.0 - smoothstep(-rsBurstEdgePx, rsBurstEdgePx,
                                            max(pastEdge.x, pastEdge.y));
             burstPx = rsGlareReachPx(glareLevel, 0.0);
@@ -1187,8 +1204,10 @@ internal static class StarShaders
 
             float intensity = inStar.x * rsBrightness * psf;
 
-            // Take the last of it to zero before the quad's edge, so the sprite never shows.
-            float edgeFade = smoothstep(1.0f, 0.85f, r);
+            // Take the last of it to zero before the fan's flat edges, so the sprite never shows:
+            // over the halo's outer part only, since a disc's own edge must not be dimmed.
+            float contentPx = inStar.y * rsFanInradius;
+            float edgeFade = smoothstep(contentPx, contentPx - 0.15 * max(contentPx - inStar.z, 1e-3), px);
             intensity *= edgeFade;
 
             // The Sun gives brightness back as it fills the frame - see SunExposureKnee.
@@ -1306,7 +1325,8 @@ internal static class StarShaders
             vec2 pastEdge = 0.5f * vec2(global.camera.screenWidth, global.camera.screenHeight)
                           * (abs(ndc) - vec2(1.0f));
 
-            float spritePx = max(glowPx, burstPx);
+            // With its corners past the content, as the star shader's: see rsFanInradius.
+            float spritePx = max(glowPx, burstPx) / rsFanInradius;
             glareLevel *= 1.0f - smoothstep(-rsBurstEdgePx, rsBurstEdgePx,
                                             max(pastEdge.x, pastEdge.y));
             burstPx = rsGlareReachPx(glareLevel, 0.0f);
@@ -1369,7 +1389,9 @@ internal static class StarShaders
             float peak = pow(edge, rsPsfBeta) / rsDisplayLevels;
 
             float intensity = peak / pow(1.0f + x * x, rsPsfBeta);
-            float edgeFade = smoothstep(1.0f, 0.85f, r);
+            // To nothing before the fan's flat edges, as the star shader does.
+            float contentPx = quadPx * rsFanInradius;
+            float edgeFade = smoothstep(contentPx, 0.85f * contentPx, r * quadPx);
             intensity *= edgeFade;
             // The same glare, from the same eye, as the stars get - and beside the core for the
             // same reason.
