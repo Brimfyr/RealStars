@@ -150,6 +150,12 @@ internal static class StarShaders
          "layout (set = 1, binding = 2) uniform sampler2D bloomColor;",
          "layout (set = 1, binding = 2) uniform sampler2D bloomColor;\n" + MergeSunBurst),
         ("PostProcess/sunbloom_merge.comp",
+         "    uvec2 screenCoords = gl_GlobalInvocationID.xy;",
+         "    uvec2 screenCoords = gl_GlobalInvocationID.xy;\n"
+         + "    // Real Stars: how much of the Sun the frame lets through, and where, gathered by the\n"
+         + "    // whole workgroup before any invocation can leave - see rsSunGather.\n"
+         + "    rsSunGather(dim);"),
+        ("PostProcess/sunbloom_merge.comp",
          "    vec4 finalColor = screenCol + vec4(bloom.rgb, 0.0);",
          "    vec4 finalColor = screenCol + vec4(bloom.rgb, 0.0);\n"
          + "    // Real Stars: the Sun's starburst, over everything - see rsSunBurst.\n"
@@ -349,6 +355,12 @@ internal static class StarShaders
         // along its own ray dims what it lets through, since air writes no depth. The Sun's own
         // sphere writes none either, so it cannot hide itself.
         //
+        // Each sample reads the four depth texels round it, weighted by how near it lies to
+        // each, so it dims smoothly as an edge crosses it rather than going out at once. And the
+        // samples are shared out across the pass's workgroup, four to an invocation, and summed
+        // once for all of them, so 256 cost each pixel less than the 32 it used to take alone -
+        // whose steps showed at a close Sun as the glare's source jumping when a hull slid over.
+        //
         // The glare is the light that got in. It is as strong as what the samples let through,
         // by the same law as distance (rsGlareLevel), and it radiates from where that light is:
         // their centre, weighted by it. A hull across three quarters of the Sun leaves the glare
@@ -356,34 +368,44 @@ internal static class StarShaders
         // the frame's edge keeps it on the part still on screen - where before it came from a
         // centre that was out of sight in every one of those cases. The part left open, as a disc
         // of the same area, is what the glare's glow starts at and widens its needles by.
-        const int rsSunSamples = 32;
+        const int rsSunSamples = 256;
+        const int rsSunGroup = 64;                  // the pass's workgroup, 8 by 8
+        shared vec4 rsSunShare[rsSunGroup];
 
-        vec3 rsSunBurst(vec2 pixel, ivec2 dim)
+        // What the gather found, for rsSunBurst. No light means no glare from this group.
+        vec2 rsSunPx, rsSunCentre;
+        float rsSunPeak, rsSunDisc, rsSunLight = 0.0, rsSunOpen;
+
+        // Called at the top of main by every invocation, before any of them can return: the
+        // barrier inside holds only where the whole group arrives.
+        void rsSunGather(ivec2 dim)
         {
-            if (rsBurstStrength() <= 0.0) return vec3(0.0);
-
+            rsSunLight = 0.0;
+            if (rsBurstStrength() <= 0.0) return;
             vec3 sunEgo = global.lighting.sunPosition.xyz;
             float dist = length(sunEgo);
-            if (dist <= 0.0) return vec3(0.0);
+            if (dist <= 0.0) return;
             vec4 clip = global.camera.viewProjection * vec4(sunEgo, 1.0);
-            if (clip.w <= 0.0) return vec3(0.0);                   // behind the camera
-            vec2 sunPx = (clip.xy / clip.w * 0.5 + 0.5) * vec2(dim);
+            if (clip.w <= 0.0) return;                              // behind the camera
+            rsSunPx = (clip.xy / clip.w * 0.5 + 0.5) * vec2(dim);
 
             // The whole Sun, before anything is in the way: how big it looks, and how far its
             // glare could reach from anywhere in that.
             float mag = rsSunAbsMag + 5.0 * log(dist / (10.0 * rsParsecMetres)) * 0.4342944819;
-            float peak = pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef))
-                       * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
-            float discPx = max(intBitsToFloat(global.lighting.lpPad1), 0.0);
-            float whitePx = rsPsfCore * sqrt(max(pow(max(peak / rsMaxOutput, 1.0),
+            rsSunPeak = pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef))
+                      * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
+            rsSunDisc = max(intBitsToFloat(global.lighting.lpPad1), 0.0);
+            float whitePx = rsPsfCore * sqrt(max(pow(max(rsSunPeak / rsMaxOutput, 1.0),
                                                      1.0 / rsPsfBeta) - 1.0, 0.0));
             // The white ring is our sprite's, and it draws in to the limb as the sphere takes
             // over (see Star.frag): once the sphere is whole, the Sun looks like its disc.
-            float looksPx = discPx + whitePx * (1.0 - rsSphereShown());
-            float reach = rsGlareReachPx(rsGlareLevel(peak), discPx);
-            vec2 fromSun = pixel - sunPx;
-            float outer = reach + looksPx;
-            if (reach <= 0.0 || dot(fromSun, fromSun) > outer * outer) return vec3(0.0);
+            float looksPx = rsSunDisc + whitePx * (1.0 - rsSphereShown());
+            float reach = rsGlareReachPx(rsGlareLevel(rsSunPeak), rsSunDisc);
+            // Only groups the glare could reach gather. Nothing here is the invocation's own,
+            // so every invocation of a group answers the same way and the group stays together.
+            vec2 corner = vec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy);
+            vec2 nearest = clamp(rsSunPx, corner, corner + vec2(gl_WorkGroupSize.xy));
+            if (reach <= 0.0 || distance(nearest, rsSunPx) > reach + looksPx) return;
 
             // The camera's far plane is one AU - exactly - so past Earth's orbit the Sun lies
             // beyond it and its reversed depth goes negative. Every sky pixel is then "nearer"
@@ -395,38 +417,54 @@ internal static class StarShaders
             // the engine's pixels turn.
             bool air = rsHasAir();
             vec3 toSun = sunEgo / dist;
-            vec3 base = rsPixelDirection(sunPx);
-            vec3 perX = rsPixelDirection(sunPx + vec2(1.0, 0.0)) - base;
-            vec3 perY = rsPixelDirection(sunPx + vec2(0.0, 1.0)) - base;
-            float light = 0.0, open = 0.0;
-            vec2 centre = vec2(0.0);
-            for (int i = 0; i < rsSunSamples; i++)
+            vec3 base = rsPixelDirection(rsSunPx);
+            vec3 perX = rsPixelDirection(rsSunPx + vec2(1.0, 0.0)) - base;
+            vec3 perY = rsPixelDirection(rsSunPx + vec2(0.0, 1.0)) - base;
+            vec4 mine = vec4(0.0);          // light, open, and the light's weighted place
+            for (int k = 0; k < rsSunSamples / rsSunGroup; k++)
             {
+                int i = int(gl_LocalInvocationIndex) + rsSunGroup * k;
                 float t = (float(i) + 0.5) / float(rsSunSamples);
                 float turn = float(i) * 2.39996323;                 // the golden angle
                 vec2 offset = looksPx * sqrt(t) * vec2(cos(turn), sin(turn));
-                vec2 at = sunPx + offset;
-                vec2 inside = min(at, vec2(dim) - at);              // in from the nearest edges
-                float w = clamp(min(inside.x, inside.y) + 0.5, 0.0, 1.0);
-                if (w <= 0.0) continue;
-                // Reversed depth: nearer is larger, and the Sun is almost at zero.
-                if (texelFetch(samplerDepth, ivec2(clamp(at, vec2(0.0), vec2(dim) - 1.0)), 0).r > sunDepth)
-                    continue;
-                open += w;
-                if (air)
-                    w *= rsAirVisibility(normalize(toSun + perX * offset.x + perY * offset.y), dist);
-                light += w;
-                centre += w * at;
+                vec2 at = rsSunPx + offset;
+                // Through the four texels round it: nothing off the frame, and nothing where the
+                // depth has something nearer than the Sun (reversed: nearer is larger).
+                vec2 f = at - 0.5;
+                ivec2 first = ivec2(floor(f));
+                vec2 frac = f - vec2(first);
+                float open = 0.0;
+                for (int n = 0; n < 4; n++)
+                {
+                    ivec2 texel = first + ivec2(n & 1, n >> 1);
+                    if (any(lessThan(texel, ivec2(0))) || any(greaterThanEqual(texel, dim))) continue;
+                    if (texelFetch(samplerDepth, texel, 0).r > sunDepth) continue;
+                    open += ((n & 1) != 0 ? frac.x : 1.0 - frac.x) * ((n >> 1) != 0 ? frac.y : 1.0 - frac.y);
+                }
+                float light = open;
+                if (air && open > 0.0)
+                    light *= rsAirVisibility(normalize(toSun + perX * offset.x + perY * offset.y), dist);
+                mine += vec4(light, open, light * at);
             }
-            if (light <= 0.0) return vec3(0.0);
-            centre /= light;
-            float seen = light / float(rsSunSamples);
-            float discSeen = discPx * sqrt(open / float(rsSunSamples));
+            rsSunShare[gl_LocalInvocationIndex] = mine;
+            memoryBarrierShared();
+            barrier();
+            vec4 sum = vec4(0.0);
+            for (int j = 0; j < rsSunGroup; j++)
+                sum += rsSunShare[j];
+            rsSunLight = sum.x / float(rsSunSamples);
+            rsSunOpen = sum.y / float(rsSunSamples);
+            rsSunCentre = sum.x > 0.0 ? sum.zw / sum.x : rsSunPx;
+        }
 
+        vec3 rsSunBurst(vec2 pixel, ivec2 dim)
+        {
+            if (rsSunLight <= 0.0) return vec3(0.0);
+            float discSeen = rsSunDisc * sqrt(rsSunOpen);
             vec3 sunLight = global.lighting.sunColor.rgb;
             vec3 tint = sunLight / max(max(sunLight.r, sunLight.g), max(sunLight.b, 1e-6));
-            float level = rsGlareLevel(peak * seen);
-            return tint * rsGlare(pixel - centre, rsGlareReachPx(level, discSeen), discSeen, level);
+            float level = rsGlareLevel(rsSunPeak * rsSunLight);
+            return tint * rsGlare(pixel - rsSunCentre, rsGlareReachPx(level, discSeen), discSeen, level);
         }
         """;
 
