@@ -175,7 +175,10 @@ internal static class SunGlow
             double looksAngular = (radius / distance) * (discPx + whitePx) / Math.Max(discPx, 1e-6);
             double covered = VesselOcclusion.Covered(camera, -dx / distance, -dy / distance,
                                                      -dz / distance, distance, looksAngular);
-            VesselOcclusion.PublishSun(__instance, slot, covered);
+            // And a planet's rings, which the burst's pass cannot read for itself. Over the disc
+            // itself: it is the Sun's own light the rings let through or not.
+            double ringDepth = RingOcclusion.Depth(cx, cy, cz, sx, sy, sz, radius / distance);
+            VesselOcclusion.PublishSun(__instance, slot, covered, ringDepth);
 
             _lightingArray ??= AccessTools.Field(__instance.GetType(), "_lightingData");
             if (_lightingArray?.GetValue(null) is Array lighting && slot < lighting.Length)

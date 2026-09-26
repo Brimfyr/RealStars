@@ -376,7 +376,7 @@ internal static class StarShaders
         vec2 rsSunPx, rsSunCentre;
         float rsSunPeak, rsSunDisc, rsSunLight = 0.0, rsSunOpen;
         vec3 rsSunHue = vec3(1.0);
-        float rsSunCloud = 1.0;
+        float rsSunCloud = 1.0, rsSunRing = 1.0;
 
         // The colour sunlight arrives in along a direction, at unit luminance: the engine's own
         // transmittance, the table the ground is lit by, for a camera inside the air. The raw
@@ -484,6 +484,11 @@ internal static class StarShaders
             // Clouds, which neither the depth nor the air above sees: the engine's cloud shadow,
             // the direct sunlight it lights the ground and vessels by, read where the camera is.
             rsSunCloud = GetCloudShadow(vec3(0.0));
+            // Rings, which this pass cannot read either: RingOcclusion works out their optical
+            // depth toward the Sun from the ring texture on the CPU, and leaves it in the high
+            // half of the celestial block's last spare word. The ring passes dim the sprites drawn
+            // before them; only this burst, drawn after, needed telling.
+            rsSunRing = exp(-max(unpackHalf2x16(uint(global.celestial.pad2)).y, 0.0));
             // And in the colour the light arrives in, from where the light that got in is.
             rsSunHue = rsArrivingHue(rsPixelDirection(rsSunCentre));
         }
@@ -502,8 +507,9 @@ internal static class StarShaders
             // the direct beam that makes the glare falls with the cloud. Through the law, a deck
             // that passed a millionth of the light still left a burst, deep in Jupiter's clouds
             // and on Venus's surface. In proportion it ends near optical depth 10, about where
-            // the disc stops outshining the cloud around it.
-            float level = rsGlareLevel(rsSunPeak * rsSunLight) * rsSunCloud;
+            // the disc stops outshining the cloud around it. Rings the same way: they scatter
+            // the Sun's light too, and it is their direct beam that makes the glare.
+            float level = rsGlareLevel(rsSunPeak * rsSunLight) * rsSunCloud * rsSunRing;
             return tint * rsGlare(pixel - rsSunCentre, rsGlareReachPx(level, discSeen), discSeen, level);
         }
         """;
@@ -1276,10 +1282,11 @@ internal static class StarShaders
 
             // Vessels too, for the Sun. They are nowhere a shader can reach, so VesselOcclusion
             // casts the engine's own part raycasts across the Sun's disc on the CPU and leaves
-            // the share it found hidden in the celestial block's last spare word. Zero, which is
-            // also what the engine writes there, means nothing in the way.
+            // the share it found hidden in the low half of the celestial block's last spare word.
+            // Zero, which is also what the engine writes there, means nothing in the way. The
+            // high half is the rings', for the merge pass: the rings dim this sprite themselves.
             if (discPx > 0.0)
-                seen *= 1.0 - clamp(intBitsToFloat(global.celestial.pad2), 0.0, 1.0);
+                seen *= 1.0 - clamp(unpackHalf2x16(uint(global.celestial.pad2)).x, 0.0, 1.0);
             flux *= seen;
 
             // Moffat beta = 2 at unit energy peaks at 1/(pi*core^2), so the profile crosses

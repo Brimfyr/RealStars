@@ -424,15 +424,38 @@ internal static class PlanetPhotometry
     private static double Rings(object celestial, object template, double radius, double albedo,
                                 double ex, double ey, double ez, double gx, double gy, double gz)
     {
-        Type tt = template.GetType();
-        if (!_ringsFields.TryGetValue(tt, out FieldInfo? rf))
-            _ringsFields[tt] = rf = AccessTools.Field(tt, "RingsReference");
-        object? rings = rf?.GetValue(template);
+        object? rings = RingsOf(template);
         if (rings == null) return 0.0;
 
         double inner = Distance(rings, "InnerRadius"), outer = Distance(rings, "OuterRadius");
         if (outer <= inner) return 0.0;
 
+        if (RingNormal(rings, celestial) is not (double nx, double ny, double nz)) return 0.0;
+
+        // How open the rings are to the star, and to the camera. The body sits at ex,ey,ez
+        // from its star and at gx,gy,gz from the camera, so those are the two directions.
+        double el = Math.Sqrt(ex * ex + ey * ey + ez * ez);
+        double gl = Math.Sqrt(gx * gx + gy * gy + gz * gz);
+        if (el <= 0.0 || gl <= 0.0) return 0.0;
+        double sinStar = Math.Abs((nx * ex + ny * ey + nz * ez) / el);
+        double sinObs = Math.Abs((nx * gx + ny * gy + nz * gz) / gl);
+
+        return RingFluxRatio(radius, albedo, inner, outer, sinStar, sinObs);
+    }
+
+    /// <summary>A body template's rings, or null for the great majority that have none.</summary>
+    public static object? RingsOf(object template)
+    {
+        Type tt = template.GetType();
+        if (!_ringsFields.TryGetValue(tt, out FieldInfo? rf))
+            _ringsFields[tt] = rf = AccessTools.Field(tt, "RingsReference");
+        return rf?.GetValue(template);
+    }
+
+    /// <summary>The ring plane's unit normal, in the ecliptic frame positions are given in, or
+    /// null when the engine's geometry cannot be reached.</summary>
+    public static (double, double, double)? RingNormal(object rings, object celestial)
+    {
         if (!_ringNormalLookedUp)
         {
             // Lives off in KSA.Rendering.Rings.Rendering, not beside the bodies, and a rename
@@ -446,22 +469,13 @@ internal static class PlanetPhotometry
                 ShaderShadow.Log("WARN: ring geometry not found; ringed planets lose their rings' light");
         }
         object? normalObj = _ringNormal?.Invoke(null, new[] { rings, celestial });
-        if (normalObj == null) return 0.0;
+        if (normalObj == null) return null;
         (double nx, double ny, double nz) = Vec(normalObj);
         double nl = Math.Sqrt(nx * nx + ny * ny + nz * nz);
-        if (nl <= 0.0) return 0.0;
-        nx /= nl; ny /= nl; nz /= nl;
-
-        // How open the rings are to the star, and to the camera. The body sits at ex,ey,ez
-        // from its star and at gx,gy,gz from the camera, so those are the two directions.
-        double el = Math.Sqrt(ex * ex + ey * ey + ez * ez);
-        double gl = Math.Sqrt(gx * gx + gy * gy + gz * gz);
-        if (el <= 0.0 || gl <= 0.0) return 0.0;
-        double sinStar = Math.Abs((nx * ex + ny * ey + nz * ez) / el);
-        double sinObs = Math.Abs((nx * gx + ny * gy + nz * gz) / gl);
-
-        return RingFluxRatio(radius, albedo, inner, outer, sinStar, sinObs);
+        return nl > 0.0 ? (nx / nl, ny / nl, nz / nl) : null;
     }
+
+    public static double DistancePublic(object owner, string field) => Distance(owner, field);
 
     private static readonly Dictionary<string, FieldInfo?> _distanceFields = new();
     private static readonly Dictionary<Type, MethodInfo?> _inMeters = new();

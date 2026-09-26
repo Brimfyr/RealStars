@@ -216,20 +216,22 @@ internal static class VesselOcclusion
     private static FieldInfo? _celestialArray, _pad2;
 
     /// <summary>
-    /// The Sun's covered fraction, for the star shader, in the celestial block's last spare
-    /// word. Written every frame the Sun is measured, and cleared by <see cref="LimbAir"/> at
-    /// the top of every frame, so a frame that never measures it never leaves one behind.
-    /// Zero means nothing in the way, which is also what the engine writes there - so a mod
-    /// that has stopped working leaves the Sun visible rather than hidden.
+    /// What stands between the camera and the Sun, in the celestial block's last spare word, as
+    /// two halves: the share vessels cover, for the star shader, and the rings' optical depth
+    /// (see <see cref="RingOcclusion"/>), for the merge pass. Written every frame the Sun is
+    /// measured, and cleared by <see cref="LimbAir"/> at the top of every frame, so a frame that
+    /// never measures it never leaves one behind. Zero means nothing in the way in both halves,
+    /// which is also what the engine writes there - so a mod that has stopped working leaves the
+    /// Sun visible rather than hidden.
     /// </summary>
-    public static void PublishSun(object program, int slot, double covered)
+    public static void PublishSun(object program, int slot, double covered, double ringDepth)
     {
         _celestialArray ??= AccessTools.Field(program.GetType(), "_celestialData");
         if (_celestialArray?.GetValue(null) is not Array celestial || slot >= celestial.Length) return;
         object box = celestial.GetValue(slot)!;
         _pad2 ??= AccessTools.Field(box.GetType(), "pad2");
         if (_pad2 == null) return;
-        _pad2.SetValue(box, BitConverter.SingleToInt32Bits((float)Math.Clamp(covered, 0.0, 1.0)));
+        _pad2.SetValue(box, LimbAir.Halves(Math.Clamp(covered, 0.0, 1.0), Math.Clamp(ringDepth, 0.0, 30.0)));
         celestial.SetValue(box, slot);
     }
 
