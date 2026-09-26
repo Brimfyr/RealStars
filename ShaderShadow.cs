@@ -123,7 +123,9 @@ internal static class ShaderShadow
             return false;
         }
 
-        File.WriteAllText(path, replacement, new UTF8Encoding(false));
+        // LF, whatever the source was checked out with: our shaders are raw string literals,
+        // which carry the C# file's own line endings.
+        File.WriteAllText(path, replacement.Replace("\r\n", "\n"), new UTF8Encoding(false));
         return true;
     }
 
@@ -142,8 +144,12 @@ internal static class ShaderShadow
 
         // The game's shaders are CRLF and our anchors are written with \n, because a C# source
         // file's own line endings are whatever git last left on disk. Normalising here means an
-        // anchor spanning several lines matches the same way on any checkout.
+        // anchor spanning several lines matches the same way on any checkout. The anchor and
+        // what replaces it too: some of it is raw string literals, which carry those endings,
+        // and left alone they made a file of mixed endings that the next edit then flattened.
         string text = File.ReadAllText(path).Replace("\r\n", "\n");
+        find = find.Replace("\r\n", "\n");
+        replace = replace.Replace("\r\n", "\n");
         if (text.Contains(replace, StringComparison.Ordinal)) return true;   // already ours
         if (!text.Contains(find, StringComparison.Ordinal))
         {
