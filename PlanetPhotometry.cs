@@ -74,11 +74,13 @@ internal static class PlanetPhotometry
     public const double AtmosphereForwardWeight = 0.1529;
 
     // ---- rings -----------------------------------------------------------------------
-    // Ring brightness follows from the ring geometry the body itself carries, so a modded
-    // ringed world works the same way. This constant is the one thing that cannot be derived:
-    // an effective albedo that also carries the rings' opposition surge, calibrated so that
-    // Saturn's swing between edge-on and wide open matches the ~1.0 magnitude observed.
-    public const double RingAlbedo = 0.97;
+    // Ring brightness follows from the rings the body itself carries: their radii, and from
+    // their texture how much of the annulus stops light and how bright what stops it is. So a
+    // modded ringed world works the same way, and a faint dusty ring adds as little as it
+    // should. This constant is the one thing that cannot be derived: it carries the rings'
+    // opposition surge and whatever separates the texture's colour from a true albedo, and is
+    // calibrated so that Saturn's stock rings, wide open, add the ~1.0 magnitude observed.
+    public const double RingGain = 3.245;
 
     /// <summary>
     /// Apparent V magnitude of a sunlit body.
@@ -137,18 +139,20 @@ internal static class PlanetPhotometry
     /// <summary>
     /// Light the rings add, as a fraction of what the globe reflects.
     ///
-    /// A flat annulus intercepts starlight in proportion to how open it is to the star, and
-    /// sends it on in proportion to how open it is to the observer, so the sine enters twice:
-    /// edge-on rings contribute nothing, which is exactly what Saturn does every fifteen years.
+    /// The rings' reflecting area (RingProfile.ReflectingArea: the annulus weighted by the
+    /// texture's opacity and albedo) intercepts starlight in proportion to how open it is to the
+    /// star, and sends it on in proportion to how open it is to the observer, so the sine enters
+    /// twice: edge-on rings contribute nothing, which is exactly what Saturn does every fifteen
+    /// years. Weighting by the texture is what keeps a ring system's full extent honest:
+    /// Saturn's reaches out through the faint E ring to 313,900 km, seven times the area of
+    /// the main rings, and a bare annulus of it made Saturn 2.7 magnitudes brighter wide open.
     /// </summary>
-    public static double RingFluxRatio(double bodyRadiusM, double bodyAlbedo,
-                                       double innerM, double outerM,
+    public static double RingFluxRatio(double bodyRadiusM, double bodyAlbedo, double reflectingAreaM2,
                                        double sinToStar, double sinToObserver)
     {
-        if (outerM <= innerM || bodyRadiusM <= 0.0) return 0.0;
-        double annulus = outerM * outerM - innerM * innerM;
+        if (reflectingAreaM2 <= 0.0 || bodyRadiusM <= 0.0) return 0.0;
         double disc = bodyRadiusM * bodyRadiusM;
-        return (RingAlbedo / Math.Max(bodyAlbedo, 1e-3)) * (annulus / disc)
+        return (RingGain / Math.Max(bodyAlbedo, 1e-3)) * (reflectingAreaM2 / disc)
              * Math.Abs(sinToStar) * Math.Abs(sinToObserver);
     }
 
@@ -429,6 +433,7 @@ internal static class PlanetPhotometry
 
         double inner = Distance(rings, "InnerRadius"), outer = Distance(rings, "OuterRadius");
         if (outer <= inner) return 0.0;
+        if (RingTexture.Of(rings) is not RingProfile texture) return 0.0;
 
         if (RingNormal(rings, celestial) is not (double nx, double ny, double nz)) return 0.0;
 
@@ -440,7 +445,7 @@ internal static class PlanetPhotometry
         double sinStar = Math.Abs((nx * ex + ny * ey + nz * ez) / el);
         double sinObs = Math.Abs((nx * gx + ny * gy + nz * gz) / gl);
 
-        return RingFluxRatio(radius, albedo, inner, outer, sinStar, sinObs);
+        return RingFluxRatio(radius, albedo, texture.ReflectingArea(inner, outer), sinStar, sinObs);
     }
 
     /// <summary>A body template's rings, or null for the great majority that have none.</summary>

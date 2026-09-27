@@ -1,8 +1,5 @@
-using System.Buffers.Binary;
 using System.Collections;
-using System.IO.Compression;
 using System.Reflection;
-using System.Text;
 using HarmonyLib;
 
 namespace RealStars;
@@ -33,7 +30,6 @@ internal static class RingOcclusion
                                  float[] Alpha, MethodInfo PositionEcl);
 
     private static readonly List<Ringed> _ringed = new();
-    private static readonly Dictionary<string, float[]?> _profiles = new(StringComparer.OrdinalIgnoreCase);
     private static object? _system;
     private static PropertyInfo? _currentSystem, _all;
     private static FieldInfo? _allList;
@@ -163,105 +159,12 @@ internal static class RingOcclusion
             double inner = PlanetPhotometry.DistancePublic(rings, "InnerRadius");
             double outer = PlanetPhotometry.DistancePublic(rings, "OuterRadius");
             MethodInfo? ecl = AccessTools.Method(body.GetType(), "GetPositionEcl", Type.EmptyTypes);
-            float[]? alpha = Profile(rings);
+            float[]? alpha = RingTexture.Of(rings)?.Alpha;
             if (outer <= inner || ecl == null || alpha == null) continue;
             _ringed.Add(new Ringed(body, rings, inner, outer, alpha, ecl));
             ShaderShadow.Log($"rings read for the Sun's burst: {inner / 1000:F0}-{outer / 1000:F0} km, "
                              + $"{alpha.Length} samples");
         }
-    }
-
-    /// <summary>The alpha row of a ring's texture, read once per file. Null when it cannot be
-    /// read, which leaves that ring out rather than the burst.</summary>
-    private static float[]? Profile(object rings)
-    {
-        string? path = null;
-        try
-        {
-            object? texture = AccessTools.Field(rings.GetType(), "Texture")?.GetValue(rings);
-            path = texture == null ? null : AccessTools.Property(texture.GetType(), "ModPath")?.GetValue(texture) as string;
-            if (string.IsNullOrEmpty(path)) return null;
-            if (_profiles.TryGetValue(path, out float[]? known)) return known;
-            float[] alpha = PngAlphaRow(File.ReadAllBytes(path));
-            _profiles[path] = alpha;
-            return alpha;
-        }
-        catch (Exception ex)
-        {
-            ShaderShadow.Log($"WARN: ring texture {path ?? "(unnamed)"} could not be read, its rings "
-                             + "will not dim the Sun's burst: " + (ex.InnerException ?? ex).Message);
-            if (path != null) _profiles[path] = null;
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// The alpha of a PNG's first row, from 0 to 1: as much of PNG as a ring texture needs. Grey,
-    /// grey and alpha, RGB or RGBA, at 8 or 16 bits, not interlaced. A format without alpha reads
-    /// as opaque, as the GPU would sample it.
-    /// </summary>
-    public static float[] PngAlphaRow(byte[] png)
-    {
-        ReadOnlySpan<byte> signature = stackalloc byte[] { 137, 80, 78, 71, 13, 10, 26, 10 };
-        if (png.Length < 8 || !png.AsSpan(0, 8).SequenceEqual(signature))
-            throw new InvalidDataException("not a PNG");
-
-        int width = 0, height = 0, depth = 0, colour = -1, interlace = 0;
-        using var idat = new MemoryStream();
-        for (int i = 8; i + 8 <= png.Length;)
-        {
-            int length = BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(i));
-            string type = Encoding.ASCII.GetString(png, i + 4, 4);
-            int data = i + 8;
-            if (length < 0 || data + length > png.Length) throw new InvalidDataException("truncated PNG");
-            if (type == "IHDR")
-            {
-                width = BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(data));
-                height = BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(data + 4));
-                depth = png[data + 8];
-                colour = png[data + 9];
-                interlace = png[data + 12];
-            }
-            else if (type == "IDAT") idat.Write(png, data, length);
-            else if (type == "IEND") break;
-            i = data + length + 4;                                // past the CRC
-        }
-
-        int channels = colour switch { 0 => 1, 2 => 3, 4 => 2, 6 => 4, _ => 0 };
-        if (width <= 0 || height <= 0 || channels == 0 || (depth != 8 && depth != 16) || interlace != 0)
-            throw new InvalidDataException($"unsupported PNG (colour type {colour}, {depth} bit, interlace {interlace})");
-
-        int pixel = channels * depth / 8;
-        var row = new byte[1 + width * pixel];
-        idat.Position = 0;
-        using (var z = new ZLibStream(idat, CompressionMode.Decompress))
-            z.ReadExactly(row);
-
-        // The first row's filter, with the row above it all zeros: Up changes nothing, Average
-        // adds half the left neighbour, and Paeth always predicts the left neighbour, as Sub does.
-        Span<byte> line = row.AsSpan(1);
-        switch (row[0])
-        {
-            case 0: case 2: break;
-            case 1: case 4:
-                for (int i = pixel; i < line.Length; i++) line[i] += line[i - pixel];
-                break;
-            case 3:
-                for (int i = pixel; i < line.Length; i++) line[i] += (byte)(line[i - pixel] >> 1);
-                break;
-            default: throw new InvalidDataException("unknown PNG filter " + row[0]);
-        }
-
-        var alpha = new float[width];
-        bool hasAlpha = colour == 4 || colour == 6;
-        int offset = (channels - 1) * depth / 8;
-        for (int x = 0; x < width; x++)
-        {
-            if (!hasAlpha) { alpha[x] = 1f; continue; }
-            int at = x * pixel + offset;
-            alpha[x] = depth == 8 ? line[at] / 255f : ((line[at] << 8) | line[at + 1]) / 65535f;
-        }
-        return alpha;
     }
 
     private static (double, double, double) Cross(double ax, double ay, double az, double bx, double by, double bz)
