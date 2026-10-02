@@ -17,6 +17,9 @@ No game files are modified. At launch the mod builds patched copies of the game'
 ### Planets
 
 - Brightness from albedo, phase and distance, on the same magnitude scale as the stars
+- Measured colours for the Sun's planets, moons, dwarf planets, asteroids and comets, lit by the Sun's light
+- Planetshine on vessels at its real strength: each body's measured colour, albedo and phase curve in visible light, over the part of its day side in view (a quarter of the sunlight in low Earth orbit)
+- Planetshine from every body, airless moons included, and out to wherever it is still visible, not just within 15,000 km
 - Saturn's rings add to its brightness
 - Planets and moons dim in their parent's shadow
 - Twinkling reduced by apparent size
@@ -27,6 +30,12 @@ No game files are modified. At launch the mod builds patched copies of the game'
 - Sphere at its real size and photosphere colour, with limb darkening
 - Dims as it fills more of the screen
 - Replaces the stock sun sprite and lens flare
+
+### Light and the eye
+
+- Every star lights in its real colour, the Sun's included
+- The eye adapts to the light in view, and only partly, as people were measured to (Zhu et al., 2026): sunlit scenes look nearly white, a red dwarf's stay warm, and dim or shadowed scenes adapt less
+- It follows a change of light over seconds to a minute, as eyes do (Fairchild and Reniff, 1995), and holds while the map is open
 
 ### Occlusion and starbursts
 
@@ -53,9 +62,15 @@ Requires [StarMap](https://github.com/StarMapLoader/StarMap). Each release is na
 
 To uninstall, delete `mods\RealStars`.
 
+## For star system authors
+
+Set a star's `<Sunlight>` to its raw colour: what its temperature gives in sRGB (any blackbody colour table), scaled to the brightness you want. Real Stars adapts the picture to that light the way an eye does, which is only partly: a Sun-like star's light looks nearly white, a red dwarf's stays warm (measured by Zhu et al., 2026). The stock Sol's `R="9" G="9" B="9"` is read as the Sun's raw colour at that brightness.
+
+Set a planet's or moon's `<Color>` to its colour in white light, as its maps are. Real Stars lights it with its star's light for its distant sprite; orbit lines keep the colour as written. A body's planetshine takes its map's average colour, and the albedo its surface is drawn with (from its `<MeanAlbedo>`, a Hapke single-scattering albedo).
+
 ## Building
 
-`deploy.ps1` builds the mod and installs it into your mods folder. `package.ps1 -Version x.y.z -GameBuild vYYYY.M.D.NNNN` builds a release archive in `dist\`. Set `StarMapDir` to your StarMap folder. `make_star_binary.py` rebuilds the star catalogue from AT-HYG v3.2 (`athyg_32_reduced_m10.csv.gz`, in `assets`) and the Hipparcos main catalogue (`hip_main.dat`).
+`deploy.ps1` builds the mod and installs it into your mods folder. `package.ps1 -Version x.y.z -GameBuild vYYYY.M.D.NNNN` builds a release archive in `dist\`. Set `StarMapDir` to your StarMap folder. `make_star_binary.py` rebuilds the star catalogue from AT-HYG v3.2 (`athyg_32_reduced_m10.csv.gz`, in `assets`) and the Hipparcos main catalogue (`hip_main.dat`). `make_body_colours.py` rebuilds `BodyColours.Generated.cs`, the bodies' measured colours, and `make_body_albedos.py` rebuilds `BodyAlbedos.Generated.cs`, their measured albedos and phase curves, from the sources they cite.
 
 ## Credits
 

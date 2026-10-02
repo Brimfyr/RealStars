@@ -154,9 +154,59 @@ public class ModMain
         else if (Patches.StarBinary != null)
             ShaderShadow.Log("WARN: Program.UpdateShaderData not found; the stars stay at the game's start date");
 
+        // The eye's adaptation to the light it is in (Adaptation), with every light raw: the stock Sol's
+        // white is read as the Sun's raw colour (SunLight). Only together, or Sol would show its raw,
+        // warm light unadapted; without them the frame and Sol's light stay as the game has them. The light
+        // is the scene's (SceneLight); if the scene cannot be read, the star's light stands in for it.
+        Type? stellarTemplate = AccessTools.TypeByName("KSA.StellarBodyTemplate");
+        MethodInfo? stellarLoad = stellarTemplate == null
+            ? null : AccessTools.Method(stellarTemplate, "OnDataLoad", new[] { modType });
+        if (updateShaderData != null && Adaptation.Resolve()
+            && stellarLoad != null && SunLight.Resolve(stellarTemplate!, modType))
+        {
+            harmony.Patch(updateShaderData,
+                postfix: new HarmonyMethod(typeof(Adaptation), nameof(Adaptation.UpdateShaderDataPostfix)));
+            harmony.Patch(stellarLoad,
+                postfix: new HarmonyMethod(typeof(SunLight), nameof(SunLight.OnDataLoadPostfix)));
+            bool scene = SceneLight.Resolve();
+            Adaptation.UseScene(scene);
+            if (!scene)
+                ShaderShadow.Log("WARN: the camera's view or the bodies not found; the eye adapts to the star's light alone");
+        }
+        else
+            ShaderShadow.Log("WARN: the tone curve's push constants or a star's light not found; "
+                             + "the frame is left unadapted and Sol's light white, as the game has them");
+
+        // Bodies in their own colours, lit by their star (BodyColours): the distant sprites read theirs through a
+        // transpiler, and planetshine is set to the real irradiance after the engine sets its own. Each fails soft
+        // on its own; the maps of bodies without measurements are read through the game's KTX library (MapColour).
+        MethodInfo? spriteData = distance == null ? null : AccessTools.Method(distance, "UpdateRenderData");
+        bool shine = false;
+        if (BodyColours.Resolve(modType))
+        {
+            if (spriteData != null)
+                harmony.Patch(spriteData,
+                    transpiler: new HarmonyMethod(typeof(BodyColours), nameof(BodyColours.SpriteTranspiler)));
+            if (!BodyColours.SpritesPatched)
+                ShaderShadow.Log("WARN: distant bodies keep the game's colours");
+            MapColour.Resolve(installRoot);
+            if (updatePlanet != null && BodyColours.ResolvePlanetshine(renderProgram!))
+            {
+                harmony.Patch(updatePlanet,
+                    postfix: new HarmonyMethod(typeof(BodyColours), nameof(BodyColours.UpdatePlanetShaderDataPostfix)));
+                shine = true;
+            }
+            else
+                ShaderShadow.Log("WARN: planetshine keeps the game's colours");
+        }
+        else
+            ShaderShadow.Log("WARN: a body's colour not found; distant bodies and planetshine keep the game's colours");
+
         ShaderShadow.Log("installed (star shader redirect active"
                          + (Patches.StarBinary != null ? ", own catalogue" : ", stock catalogue")
-                         + (sizeScale != null ? ", photometric planets)" : ")"));
+                         + (sizeScale != null ? ", photometric planets" : "")
+                         + (BodyColours.SpritesPatched ? $", {BodyColours.Measured.Count} measured body colours" : "")
+                         + (shine ? $", planetshine with {BodyColours.MeasuredPhotometry.Count} measured albedos)" : ")"));
     }
 }
 

@@ -18,3 +18,6 @@ glare_ref.png
 content/*.png
 !content/icon.png
 content/*.mp4
+
+# Python bytecode
+__pycache__/

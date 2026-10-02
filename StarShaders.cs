@@ -34,7 +34,26 @@ internal static class StarShaders
     /// </summary>
     public static readonly string[] Redirected =
         { "Sun/Sun.frag", "PostProcess/sunbloom.frag", "PostProcess/sunbloom_merge.comp",
-          "PostProcess/kawase_downsample.comp", "PostProcess/kawase_downsample_with_thresholds.comp" };
+          "PostProcess/kawase_downsample.comp", "PostProcess/kawase_downsample_with_thresholds.comp",
+          "PostProcess/composite.frag" };
+
+    /// <summary>
+    /// The vessel shaders, served from our tree for one line: the fade that switches planetshine off by 0.0001 AU
+    /// (15,000 km) from the planet's centre, whatever the planet, which leaves the giants none at all. BodyColours
+    /// sets planetshine to the real irradiance at the camera, which dims with distance by itself until the shaders'
+    /// own threshold, 0.01 of the game's light (a thousandth of the Sun's), drops it. None of these includes a file
+    /// Real Atmospheres patches, so serving them from here takes nothing from it. All or none: a vessel shader left
+    /// fading would light its parts differently from the rest of the vessel.
+    /// </summary>
+    public static readonly string[] VesselShaders =
+    {
+        "Mesh/ModelPbr.frag", "Mesh/MeshIndirect.frag", "Mesh/MeshIndirectRaytraced.frag", "Mesh/MeshGlassIndirect.frag",
+        "Mesh/MeshGlassIndirectRaytraced.frag", "Mesh/ModelTranslucent.frag", "Mesh/Fur.frag", "Spline.frag",
+    };
+
+    public const string PlanetshineFade = "float taperFactor = smoothstep(0.0001, 0.0, distanceToPlanet);";
+    public const string PlanetshineUnfaded =
+        "float taperFactor = 1.0;   // Real Stars: planetshine is the real irradiance, dimming with distance (BodyColours)";
 
     /// <summary>
     /// Shaders we change a line of rather than replace. The Sun's surface is a raymarch of
@@ -44,6 +63,23 @@ internal static class StarShaders
     /// </summary>
     public static readonly (string Name, string Find, string Replace)[] Edits =
     {
+        // The eye's adaptation to the light it is in, over the whole frame before the tone curve:
+        // each cone's signal scaled from the light's raw colour to the white an adapted eye settles
+        // on. Adaptation writes the three scales into spare floats of this pass's own push constants
+        // every frame; until it has, they are zero and the frame is left as it is.
+        ("PostProcess/composite.frag",
+         "    color = tonemapSwitch(tonemapperIndex, color, tonemapExposure, tonemapGamma, hableTonemapUniforms);",
+         "    // Real Stars: the eye adapted to the light it is in (Adaptation.cs)\n"
+         + "    vec3 rsAdapt = vec3(hableTonemapUniforms.segments[0].padding0, hableTonemapUniforms.segments[0].padding1,\n"
+         + "                        hableTonemapUniforms.segments[1].padding0);\n"
+         + "    if (rsAdapt.x > 0.0)\n"
+         + "    {\n"
+         + "        const mat3 rsToCone = " + Adaptation.ToConeGlsl + ";\n"
+         + "        const mat3 rsFromCone = " + Adaptation.FromConeGlsl + ";\n"
+         + "        color = max(rsFromCone * (rsAdapt * (rsToCone * color)), vec3(0.0));\n"
+         + "    }\n"
+         + "    color = tonemapSwitch(tonemapperIndex, color, tonemapExposure, tonemapGamma, hableTonemapUniforms);"),
+
         // The sphere and its corona are coloured by a blackbody ramp over 1400-2700 K, which is
         // a flame: embers through to orange. The Sun's photosphere is 5772 K and reads as
         // near-white, its granulation varying a couple of hundred kelvin either side, so the
@@ -1214,7 +1250,8 @@ internal static class StarShaders
             // channel at 1, which keeps the bytes' precision; here it is brought to unit
             // luminance instead, so the magnitude alone sets how bright a star is. Left at its
             // peak, every coloured star was dimmed by its own colour - the Sun by 0.11 mag, blue
-            // stars and red giants by 0.4 to 0.6.
+            // stars and red giants by 0.4 to 0.6. The colours are raw, as the light is; the eye's
+            // adaptation to the light it is in is applied to the whole frame (Adaptation).
             vec4 packedData = unpackRGBA(packed);
             outColor = packedData.xyz / max(dot(packedData.xyz, rsLuma), 1e-3);
 

@@ -34,6 +34,25 @@ Acknowledgements to include when distributing a release:
 > by national institutions, in particular the institutions participating in the Gaia Multilateral
 > Agreement.
 
+## Body colours
+
+The colours of the Sun's planets, moons and minor bodies (`BodyColours.Generated.cs`, compiled into the
+mod) are derived by `make_body_colours.py` from published measurements, each cited there: planetary
+albedos (Mallama et al. 2017), the giant planets' and Titan's spectra (Karkoschka 1998, NASA PDS), the
+Galilean satellites (Johnson & McCord 1971; Cassini, Mayorga et al. 2020), the Moon (Lane & Irvine 1973;
+McCord & Johnson 1970), the Eight-Color Asteroid Survey (Zellner et al. 1985, NASA PDS), small satellite
+colours (Neese 2004, NASA PDS) and the MBOSS colours of the outer solar system (Hainaut et al. 2012).
+
+## Body albedos
+
+How the Sun's bodies reflect visible light (`BodyAlbedos.Generated.cs`) is derived by `make_body_albedos.py`
+from published geometric albedos and phase curves, each cited there: the planets' phase curves from The
+Astronomical Almanac (Mallama & Hilton 2018), the Earth's from Robinson (2025), the Moon's from Allen's
+Astrophysical Quantities (Cox 2000), Titan's from Cassini (Garcia Munoz et al. 2017), satellite albedos and
+phase integrals from Voyager, Cassini, New Horizons and ground photometry (as compiled by Brucker et al. 2009
+and the JPL Solar System Dynamics group), asteroid albedos from the JPL Small-Body Database and the irregular
+satellites' from NEOWISE (Grav et al. 2015).
+
 ## Not shipped
 
 The game's own star binary and Sun mesh are used in place and not redistributed.

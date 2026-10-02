@@ -86,10 +86,26 @@ internal static class ShaderShadow
             EditShader(Path.Combine(dstShaders, e.Name.Replace('/', Path.DirectorySeparatorChar)),
                        e.Find, e.Replace));
 
+        // The vessel shaders' planetshine fade, all or none (StarShaders.VesselShaders).
+        int unfaded = StarShaders.VesselShaders.Count(n =>
+            EditShader(Path.Combine(dstShaders, n.Replace('/', Path.DirectorySeparatorChar)),
+                       StarShaders.PlanetshineFade, StarShaders.PlanetshineUnfaded));
+        PlanetshineUnfaded = unfaded == StarShaders.VesselShaders.Length;
+        if (PlanetshineUnfaded)
+            PatchedShaders = PatchedShaders.Concat(StarShaders.VesselShaders).ToArray();
+        else
+            Log($"WARN: {unfaded}/{StarShaders.VesselShaders.Length} vessel shaders still read as the mod expects; "
+                + "planetshine keeps the game's fade at 0.0001 AU");
+
         ShadersRoot = dstShaders;
         Log($"shader tree ready ({patched}/{replacing.Length} shaders replaced, "
-            + $"{edited}/{StarShaders.Edits.Length} edits applied) -> {dstShaders}");
+            + $"{edited}/{StarShaders.Edits.Length} edits applied"
+            + (PlanetshineUnfaded ? $", planetshine unfaded in {unfaded} vessel shaders" : "") + $") -> {dstShaders}");
     }
+
+    /// <summary>True when the vessel shaders no longer fade planetshine out (StarShaders.VesselShaders): it is then
+    /// written as the real irradiance, with nothing to make up for.</summary>
+    public static bool PlanetshineUnfaded { get; private set; }
 
     /// <summary>
     /// Writes our version of a star shader over the copy in our tree, but only after the

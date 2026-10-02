@@ -35,6 +35,8 @@ So this writes its own, with four changes:
               the CIE 1931 observer, rather than the piecewise fit the game uses - which
               reads the V-I column as though it were B-V, and returns black outside
               -0.4..2.1, culling 158 naked-eye stars including Betelgeuse and Antares.
+              Raw, against the display's white, as a star's <Sunlight> is: the mod adapts
+              the picture to the light it is in (Adaptation.cs), stars and light alike.
   frame       True J2000 ecliptic, Z-up, matching the shipped binary. The game's own
               `generatestarbinary` writes Y-up equatorial, so anything it produces is
               misoriented against the solar system.
@@ -222,9 +224,8 @@ def teff_from_bv(bv):
     return 4600.0 * (1.0 / (0.92 * bv + 1.70) + 1.0 / (0.92 * bv + 0.62))
 
 
-def colours(bv):
-    """B-V to linear sRGB, peak-normalised so the byte carries hue and nothing else."""
-    T = np.clip(teff_from_bv(np.clip(bv, -0.4, 2.5)), 1500.0, 40000.0)
+def blackbody_srgb(T):
+    """Linear sRGB of blackbodies at temperatures T, against the display's D65 white."""
     lam = np.arange(380.0, 781.0, 5.0)
     xb, yb, zb = cie_xyz(lam)
     spec = planck(lam, T)
@@ -234,7 +235,16 @@ def colours(bv):
     M = np.array([[ 3.2406, -1.5372, -0.4986],
                   [-0.9689,  1.8758,  0.0415],
                   [ 0.0557, -0.2040,  1.0570]])
-    rgb = np.clip(xyz @ M.T, 0.0, None)
+    return np.clip(xyz @ M.T, 0.0, None)
+
+
+def colours(bv):
+    """B-V to linear sRGB, raw: against the display's D65 white, the colour a star's temperature
+    gives anywhere, and the convention for a star's <Sunlight> too. Peak-normalised so the byte
+    carries hue and nothing else. The mod adapts the whole picture to the light the eye is in, and
+    only partly (Zhu et al. 2026; Adaptation.cs), so the Sun reads nearly white and a red dwarf warm."""
+    T = np.clip(teff_from_bv(np.clip(bv, -0.4, 2.5)), 1500.0, 40000.0)
+    rgb = blackbody_srgb(T)
     return rgb / np.maximum(rgb.max(1, keepdims=True), 1e-9), T
 
 
