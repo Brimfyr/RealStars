@@ -184,7 +184,7 @@ internal static class SunGlow
             if (_lightingArray?.GetValue(null) is Array lighting && slot < lighting.Length)
             {
                 object lbox = lighting.GetValue(slot)!;
-                _lpPad1 ??= AccessTools.Field(lbox.GetType(), "lpPad1");
+                _lpPad1 ??= AccessTools.Field(lbox.GetType(), "lpPad4");   // the disc's size, in pixels, as float bits
                 _lpPad1?.SetValue(lbox, BitConverter.SingleToInt32Bits((float)discPx));
                 lighting.SetValue(lbox, slot);
             }

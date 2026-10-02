@@ -60,7 +60,11 @@ public class ModMain
         // patch the sizing that feeds them, or they would be reading the game's numbers in our
         // units.
         Type? distance = AccessTools.TypeByName("KSA.StaticCelestialDistanceRendering");
-        MethodInfo? sizeScale = distance == null ? null : AccessTools.Method(distance, "GetApparentSizeScale");
+        // The body overload: KSA 2026.10 added GetApparentSizeScale(meanRadius, min) beside it, which the body one
+        // calls and the other stars' dots use, so the name alone no longer picks one.
+        Type? orbiter = AccessTools.TypeByName("KSA.IOrbiter");
+        MethodInfo? sizeScale = distance == null || orbiter == null ? null
+            : AccessTools.Method(distance, "GetApparentSizeScale", new[] { orbiter });
 
         ShaderShadow.Build(coreDir, modDir, patchPlanets: sizeScale != null);
 

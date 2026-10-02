@@ -183,8 +183,8 @@ internal static class StarShaders
         // after the world, writes the final HDR image, skips what is under the UI, and does not
         // include the atmosphere functions, so Real Atmospheres keeps its own.
         ("PostProcess/sunbloom_merge.comp",
-         "layout (set = 1, binding = 2) uniform sampler2D bloomColor;",
-         "layout (set = 1, binding = 2) uniform sampler2D bloomColor;\n" + MergeSunBurst),
+         "layout (set = 2, binding = 2) uniform sampler2D bloomColor;",
+         "layout (set = 2, binding = 2) uniform sampler2D bloomColor;\n" + MergeSunBurst),
         ("PostProcess/sunbloom_merge.comp",
          "    uvec2 screenCoords = gl_GlobalInvocationID.xy;",
          "    uvec2 screenCoords = gl_GlobalInvocationID.xy;\n"
@@ -277,7 +277,7 @@ internal static class StarShaders
             float mag = rsSunAbsMag + 5.0 * log(dist / (10.0 * rsParsecMetres)) * 0.4342944819;
             float peak = pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef))
                        * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
-            float discPx = max(intBitsToFloat(global.lighting.lpPad1), 0.0);
+            float discPx = max(intBitsToFloat(global.lighting.lpPad4), 0.0);
             float whitePx = rsPsfCore * sqrt(max(pow(max(peak / rsBloomWhite, 1.0),
                                                      1.0 / rsPsfBeta) - 1.0, 0.0));
             return vec3(clip.xy / clip.w * 0.5 + 0.5, discPx + whitePx + 2.0);
@@ -429,8 +429,8 @@ internal static class StarShaders
             {
                 vec2 uv = GetTransmittanceLutUV(global.lighting.planetRadius, top, r,
                                                 dot(-centre / r, towardLight),
-                                                vec2(textureSize(transmittanceLutGlobal, 0).xy));
-                light *= textureLod(transmittanceLutGlobal,
+                                                vec2(textureSize(TRANSMITTANCE_LUT_SAMPLER, 0).xy));
+                light *= textureLod(TRANSMITTANCE_LUT_SAMPLER,
                                     vec3(uv, float(global.lighting.atmosphereLutLayer)), 0.0).rgb;
             }
             float luma = dot(light, rsLuma);
@@ -455,7 +455,7 @@ internal static class StarShaders
             float mag = rsSunAbsMag + 5.0 * log(dist / (10.0 * rsParsecMetres)) * 0.4342944819;
             rsSunPeak = pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef))
                       * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
-            rsSunDisc = max(intBitsToFloat(global.lighting.lpPad1), 0.0);
+            rsSunDisc = max(intBitsToFloat(global.lighting.lpPad4), 0.0);
             float whitePx = rsPsfCore * sqrt(max(pow(max(rsSunPeak / rsMaxOutput, 1.0),
                                                      1.0 / rsPsfBeta) - 1.0, 0.0));
             // The white ring is our sprite's, and it draws in to the limb as the sphere takes
@@ -636,13 +636,14 @@ internal static class StarShaders
         // Turbulence rearranges a wavefront on its way down, and a point source' brightness
         // wanders as a result. Three scalings, all consequences rather than choices:
         //   amplitude  sigma^2 goes as (sec z)^(11/6), so sigma goes as airmass^0.92 and
-        //              saturates near 1. The zenith value arrives in csPad0 from the C# side,
+        //              saturates near 1. The zenith value arrives in lpPad2's low half from the C# side,
         //              already carrying the body's air density and the observer's altitude.
         //   speed      the pattern drifts past on the high-altitude wind. It is milliseconds
         //              in truth; what an eye or a frame resolves is the low end, and it slows
         //              towards the horizon as the path lengthens.
         //   colour     refraction is wavelength dependent, so a low star smears into a small
-        //              spectrum. Past the angular scale in csPad1 the colours cross different
+        //              spectrum. Past the angular scale in lpPad2's high half (in arcseconds, which
+        //              half precision holds where radians would not) the colours cross different
         //              turbulence and flicker apart, which is a star flashing red and blue.
         const float rsScintFreqHz = 34.0;      // at the zenith; slower low down
         const float rsDispersionArcsec = 0.54; // 400-700nm separation per tan(z), Earth sea level
@@ -684,8 +685,9 @@ internal static class StarShaders
         // twinkles without getting brighter or fainter on average.
         vec3 rsScintillation(vec3 starDir, float sourceRadians, float time)
         {
-            float sigmaZenith = global.lighting.csPad0;
-            float thetaC = global.lighting.csPad1;
+            vec2 rsAir = unpackHalf2x16(uint(global.lighting.lpPad2));
+            float sigmaZenith = rsAir.x;
+            float thetaC = rsAir.y / rsArcsecPerRad;
             if (sigmaZenith <= 0.0 || thetaC <= 0.0) return vec3(1.0);
 
             // Straight up, from the camera's place above the nearby body.
@@ -708,7 +710,7 @@ internal static class StarShaders
             // Simulation seconds, arriving as float bits in a spare int, so the air moves with
             // the universe: still when paused, quicker under time warp. The `time` argument is
             // only the fallback for when there is no simulation clock to read.
-            float simTime = intBitsToFloat(global.lighting.lpPad0);
+            float simTime = intBitsToFloat(global.lighting.lpPad3);
             float frequency = rsScintFreqHz / sqrt(airmass);
             float t = (simTime != 0.0 ? simTime : time) * frequency;
 
@@ -1273,7 +1275,7 @@ internal static class StarShaders
             // The Sun's own angular size, in pixels: it is a resolved disc, and both the
             // profile below and the scintillation above need to know that.
             float discPx = dot(position, position) < 1e-12
-                         ? max(intBitsToFloat(global.lighting.lpPad1), 0.0) : 0.0;
+                         ? max(intBitsToFloat(global.lighting.lpPad4), 0.0) : 0.0;
 
             // Twinkle. A star is unresolved, so it gets the full effect; the brightness and
             // the colour move together, which is why the size is computed from the flickered

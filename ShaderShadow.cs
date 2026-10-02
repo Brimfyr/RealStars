@@ -82,9 +82,20 @@ internal static class ShaderShadow
 
         string[] replacing = StarShaders.All.Select(s => s.Name).Where(PatchedShaders.Contains).ToArray();
         int patched = replacing.Count(name => PatchStarShader(Path.Combine(dstShaders, name)));
-        int edited = StarShaders.Edits.Count(e =>
-            EditShader(Path.Combine(dstShaders, e.Name.Replace('/', Path.DirectorySeparatorChar)),
-                       e.Find, e.Replace));
+        // A file's edits go in together or not at all: when an update moved one of three anchors
+        // in sunbloom_merge.comp (KSA 2026.10), the other two still went in and called functions
+        // the first should have added, and the pass failed to compile.
+        int edited = 0;
+        foreach (var file in StarShaders.Edits.GroupBy(e => e.Name))
+        {
+            string path = Path.Combine(dstShaders, file.Key.Replace('/', Path.DirectorySeparatorChar));
+            if (!AllAnchorsPresent(path, file))
+            {
+                Log($"WARN: {file.Key} no longer contains every line this mod edits; leaving it stock");
+                continue;
+            }
+            edited += file.Count(e => EditShader(path, e.Find, e.Replace));
+        }
 
         // The vessel shaders' planetshine fade, all or none (StarShaders.VesselShaders).
         int unfaded = StarShaders.VesselShaders.Count(n =>
@@ -175,6 +186,15 @@ internal static class ShaderShadow
 
         File.WriteAllText(path, text.Replace(find, replace), new UTF8Encoding(false));
         return true;
+    }
+
+    /// <summary>Every edit of one file can apply: its anchor is there, or its replacement already is.</summary>
+    private static bool AllAnchorsPresent(string path, IEnumerable<(string Name, string Find, string Replace)> edits)
+    {
+        if (!File.Exists(path)) return false;
+        string text = File.ReadAllText(path).Replace("\r\n", "\n");
+        return edits.All(e => text.Contains(e.Replace.Replace("\r\n", "\n"), StringComparison.Ordinal)
+                           || text.Contains(e.Find.Replace("\r\n", "\n"), StringComparison.Ordinal));
     }
 
     private static void CopyTree(string src, string dst)

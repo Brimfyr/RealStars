@@ -184,7 +184,8 @@ internal static class Scintillation
     private static PropertyInfo? _meanRadius, _bodyTemplateProp;
     private static FieldInfo? _atmosphereField, _physicalField, _densityField, _scaleHeightField;
     private static readonly Dictionary<Type, MethodInfo?> _positionEgos = new();
-    private static FieldInfo? _pad0, _pad1, _lpPad0;
+    private static FieldInfo? _airPad, _clockPad;
+    private const double ArcsecPerRadian = 206264.806;
     private static bool _logged;
 
     // Per TYPE, because the game has more than one kind of viewport and more than one kind of
@@ -199,7 +200,7 @@ internal static class Scintillation
 
     /// <summary>
     /// Postfix on PlanetRenderer.UpdatePlanetShaderData: work out the observer's air and leave
-    /// it in the two spare floats of the lighting uniform, which nothing else uses.
+    /// it in a spare int of the lighting uniform as two halves, which nothing else uses.
     /// </summary>
     public static void UpdatePlanetShaderDataPostfix(object __instance, object? nearbyCelestial, object viewport)
     {
@@ -221,18 +222,19 @@ internal static class Scintillation
             if (slotProp?.GetValue(viewport) is not int slot
                 || slot < 0 || slot >= lighting.Length) return;
 
-            // A struct in an array: take a copy, set the private pads, put it back.
+            // A struct in an array: take a copy, set the private pads, put it back. KSA 2026.10
+            // gave the spare floats this used to the sky's tables and left three spare ints: the
+            // strength and the angular scale go in one as halves, the scale in arcseconds, which
+            // half precision holds where radians (~1e-5) would not.
             object box = lighting.GetValue(slot)!;
-            _pad0 ??= AccessTools.Field(box.GetType(), "csPad0");
-            _pad1 ??= AccessTools.Field(box.GetType(), "csPad1");
-            if (_pad0 == null || _pad1 == null) { _consecutiveFailures = GiveUpAfter; return; }
-            _pad0.SetValue(box, (float)sigma);
-            _pad1.SetValue(box, (float)thetaC);
+            _airPad ??= AccessTools.Field(box.GetType(), "lpPad2");
+            if (_airPad == null) { _consecutiveFailures = GiveUpAfter; return; }
+            _airPad.SetValue(box, LimbAir.Halves(sigma, thetaC * ArcsecPerRadian));
 
-            // Simulation seconds for the star shader, as float bits in a spare INT: there is no
-            // spare float left in this uniform, and intBitsToFloat costs nothing.
-            _lpPad0 ??= AccessTools.Field(box.GetType(), "lpPad0");
-            _lpPad0?.SetValue(box, BitConverter.SingleToInt32Bits((float)SimSeconds));
+            // Simulation seconds for the star shader, as float bits in a spare int: intBitsToFloat
+            // costs nothing.
+            _clockPad ??= AccessTools.Field(box.GetType(), "lpPad3");
+            _clockPad?.SetValue(box, BitConverter.SingleToInt32Bits((float)SimSeconds));
 
             lighting.SetValue(box, slot);
             _consecutiveFailures = 0;
