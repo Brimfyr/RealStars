@@ -127,6 +127,11 @@ internal static class StarShaders
          + "    float impact = length(cross(toCentre, ray_direction));\n"
          + "    float edge = max(fwidth(impact), 1e-6);\n"
          + "    float alpha = 1. - smoothstep(sunRadius - edge, sunRadius + edge, impact);\n"
+         + "    // And only ahead of the camera. The sight line is the same through either face of the\n"
+         + "    // mesh, and the far faces are the ones drawn (SunSphere), so that the star is there from\n"
+         + "    // inside the mesh as well; but from inside, a line the other way meets the star behind\n"
+         + "    // the camera.\n"
+         + "    if (dot(centerPos, ray_direction) <= 0. && length(centerPos) > sunRadius) alpha = 0.;\n"
          + "\n"
          + "    // The engine draws this mesh below 88 solar radii and not above it, in one\n"
          + "    // step. Our sprite draws the Sun underneath at every distance, at the same\n"
@@ -156,11 +161,21 @@ internal static class StarShaders
         // The value is not constant - it gives brightness back as the disc fills the frame,
         // standing in for the exposure adaptation the engine has not got - but both sides read
         // it from the same expression, so it moves for both of them together.
+        //
+        // And in the star's own colour, as the sprite is: its light at unit luminance. The
+        // palette above is white at every temperature near the Sun's, and it is the same for
+        // every star, so the sphere of a red dwarf was as white as the Sun's - and, since the
+        // frame's adaptation takes the star's raw colour to the eye's white, a little blue
+        // (user, 2026-10-06: "Proxima turns white"). The light is the lighting star's, the one
+        // this sphere is drawn for, raw as SunLight leaves it.
         ("Sun/Sun.frag",
            "    // Apply bloom\n"
          + "    col.rgb *= 1.3;",
-           "    // Real Stars: the level our own sprite draws the Sun at, so they can be traded.\n"
-         + "    col.rgb *= " + SunLevelGlsl + ";"),
+           "    // Real Stars: the level our own sprite draws the star at, so they can be traded, in the\n"
+         + "    // star's own colour: its light at unit luminance, as the sprite's is.\n"
+         + "    vec3 rsStarLight = max(global.lighting.sunColor.rgb, vec3(0.0));\n"
+         + "    float rsStarLuma = dot(rsStarLight, vec3(0.2126, 0.7152, 0.0722));\n"
+         + "    col.rgb *= " + SunLevelGlsl + " * (rsStarLuma > 1e-6 ? rsStarLight / rsStarLuma : vec3(1.0));"),
 
         // The last thing drawing a Sun that is not ours.
         //
@@ -194,8 +209,9 @@ internal static class StarShaders
         ("PostProcess/sunbloom_merge.comp",
          "    vec4 finalColor = screenCol + vec4(bloom.rgb, 0.0);",
          "    vec4 finalColor = screenCol + vec4(bloom.rgb, 0.0);\n"
-         + "    // Real Stars: the Sun's starburst, over everything - see rsSunBurst.\n"
-         + "    finalColor.rgb += rsSunBurst(vec2(screenCoords) + vec2(0.5), dim);"),
+         + "    // Real Stars: the Sun's starburst, over everything, and the Sun held to its own hue\n"
+         + "    // where it burns out - see rsSunOver.\n"
+         + "    finalColor.rgb = rsSunOver(finalColor.rgb, vec2(screenCoords) + vec2(0.5), dim);"),
 
         ("PostProcess/sunbloom.frag",
          "    float sunPower = innerSun * innerSunScalar + outerSun * sunData.outerSunColorScalar;",
@@ -221,7 +237,7 @@ internal static class StarShaders
          + "vec3 dualDownSample(vec2 uv, vec2 halfpixel)\n"
          + "{\n"
          + "    // Real Stars: each tap as the bloom may see it - see rsBloomTap.\n"
-         + "    vec3 rsSun = rsBloomSun();\n"
+         + "    float rsSun = rsBloomSun();\n"
          + "    vec2 rsFlip = vec2(halfpixel.x, -halfpixel.y);\n"
          + "    vec3 downsample = rsBloomTap(textureLod(srcTexture, uv, 0.0).rgb * 4.0, uv, 4.0, rsSun);\n"
          + "    downsample += rsBloomTap(textureLod(srcTexture, uv - halfpixel, 0.0).rgb, uv - halfpixel, 1.0, rsSun);\n"
@@ -243,7 +259,7 @@ internal static class StarShaders
          + "vec3 dualDownSample(vec2 uv, vec2 halfpixel)\n"
          + "{\n"
          + "    // Real Stars: each tap as the bloom may see it, before the threshold - see rsBloomTap.\n"
-         + "    vec3 rsSun = rsBloomSun();\n"
+         + "    float rsSun = rsBloomSun();\n"
          + "    vec2 rsFlip = vec2(halfpixel.x, -halfpixel.y);\n"
          + "    vec3 e = rsBloomTap(textureLod(srcTexture, uv, 0.0).rgb * 4.0, uv, 4.0, rsSun);\n"
          + "    vec3 a = rsBloomTap(textureLod(srcTexture, uv - rsFlip, 0.0).rgb, uv - rsFlip, 1.0, rsSun);\n"
@@ -264,33 +280,46 @@ internal static class StarShaders
         #include "../Common/Shared.glsl"
         #include "../Common/Camera.glsl"
         {{Tuning}}
+        {{SunPlane}}
 
-        // The Sun's white, as the merge pass finds it: its centre as uv, and its radius in screen
-        // pixels - the disc, the ring its profile holds over rsBloomWhite past the limb, and two
-        // pixels for a tap's footprint. A radius of zero when it is behind the camera.
-        vec3 rsBloomSun()
+        // The Sun's white, as the merge pass finds it: its radius in pixels on the Sun's plane (see
+        // rsSunOnPlane, which rsBloomSun sets up) - the disc, the ring its profile holds over
+        // rsBloomSeen past the limb, and two pixels for a tap's footprint. Zero when none of it can be
+        // in view.
+        //
+        // At the default exposure nothing round the Sun is over rsBloomSeen but that. At a lower
+        // one white is higher (rsWhiteScale) and the burnt-out part of the Sun's glare with it,
+        // while the blooms' own thresholds stay where they are, and the blooms come after the
+        // merge pass: they would lay a second glow round the Sun's. So then the radius takes in
+        // the glare as far as it can be over rsBloomSeen: by the glow's own fall, in its reddest
+        // band, for a lane three times the mean.
+        float rsBloomSun()
         {
-            vec3 sunEgo = global.lighting.sunPosition.xyz;
-            float dist = length(sunEgo);
-            vec4 clip = global.camera.viewProjection * vec4(sunEgo, 1.0);
-            if (dist <= 0.0 || clip.w <= 0.0) return vec3(0.0);
-            float mag = rsSunAbsMag + 5.0 * log(dist / (10.0 * rsParsecMetres)) * 0.4342944819;
+            if (!rsSunPlaneSet(vec2(global.camera.screenWidth, global.camera.screenHeight))) return 0.0;
+            float dist = rsSunAway;
+            float mag = rsLightAbsMag() + 5.0 * log(dist / (10.0 * rsParsecMetres)) * 0.4342944819;
             float peak = pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef))
                        * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
-            float discPx = max(intBitsToFloat(global.lighting.lpPad4), 0.0);
-            float whitePx = rsPsfCore * sqrt(max(pow(max(peak / rsBloomWhite, 1.0),
+            float discPx = rsSunDiscPx();
+            float whitePx = rsPsfCore * sqrt(max(pow(max(peak / rsBloomSeen, 1.0),
                                                      1.0 / rsPsfBeta) - 1.0, 0.0));
-            return vec3(clip.xy / clip.w * 0.5 + 0.5, discPx + whitePx + 2.0);
+            float glarePx = 0.0;
+            if (rsWhiteScale() > 1.0)
+                glarePx = min(rsGlareCorePx * sqrt(max(pow(max(3.0 * rsGlareLevel(peak) / rsBloomSeen, 1.0),
+                                                           2.0 / rsGlareFall) - 1.0, 0.0))
+                              / rsBands[rsBandCount - 1].w, rsMaxRayPx);
+            return discPx + max(whitePx, glarePx) + 2.0;
         }
 
         // One tap of a downsample, carrying `weight` samples, as the bloom may see it: inside the
-        // Sun's white, no brighter than rsBloomWhite. What is drawn is untouched.
-        vec3 rsBloomTap(vec3 tap, vec2 uv, float weight, vec3 sun)
+        // Sun's white, no brighter than rsBloomSeen. What is drawn is untouched.
+        vec3 rsBloomTap(vec3 tap, vec2 uv, float weight, float sun)
         {
-            vec2 px = (uv - sun.xy) * vec2(global.camera.screenWidth, global.camera.screenHeight);
-            if (dot(px, px) >= sun.z * sun.z) return tap;
+            if (sun <= 0.0) return tap;
+            vec2 px = rsSunOnPlane(uv * vec2(global.camera.screenWidth, global.camera.screenHeight));
+            if (dot(px, px) >= sun * sun) return tap;
             float luma = dot(tap, rsLuma);
-            float limit = rsBloomWhite * weight;
+            float limit = rsBloomSeen * weight;
             return luma > limit ? tap * (limit / luma) : tap;
         }
 
@@ -361,12 +390,24 @@ internal static class StarShaders
         + " / max(length(global.lighting.sunPosition.xyz), 1.0))";
 
     /// <summary>
+    /// White now over white at the game's default exposure: what every level here that means
+    /// "white on the screen" is multiplied by, so that it still does when the player has moved
+    /// the exposure (Exposure.cs, which leaves the setting in the session constants' spare word;
+    /// zero there is the default). Written out in full because the Sun's sphere reads it too,
+    /// and its shader takes one line from here and none of the tuning.
+    /// </summary>
+    public const string WhiteScaleGlsl =
+        "(intBitsToFloat(globalConstants.gtPad0) > 0.0"
+        + " ? clamp(1.25 / intBitsToFloat(globalConstants.gtPad0), 0.001, 1000.0) : 1.0)";
+
+    /// <summary>
     /// The level the Sun's disc is drawn at. Written once and read by both the sprite and the
-    /// sphere, because the moment they disagree the handover becomes visible again.
+    /// sphere, because the moment they disagree the handover becomes visible again. At the
+    /// game's exposure: every figure above is the default's.
     /// </summary>
     public const string SunLevelGlsl =
-        "clamp(" + MaxOutput + " * pow(" + SunExposureKnee + " / max(" + SunFractionGlsl + ", 1e-6), "
-        + SunExposurePower + "), " + SunExposureFloor + ", " + MaxOutput + ")";
+        "(" + WhiteScaleGlsl + " * clamp(" + MaxOutput + " * pow(" + SunExposureKnee + " / max(" + SunFractionGlsl + ", 1e-6), "
+        + SunExposurePower + "), " + SunExposureFloor + ", " + MaxOutput + "))";
 
     /// <summary>
     /// The Sun's starburst as the merge pass draws it, over the finished image. The tuning comes
@@ -378,7 +419,8 @@ internal static class StarShaders
 
         // ---- Real Stars ----
         {{Tuning}}
-        const float rsMaxOutput = {{MaxOutput}};
+        {{SunPlane}}
+        float rsMaxOutput = {{MaxOutput}} * rsWhiteScale();    // the Sun's level, at the game's exposure
 
         // Where the Sun is, what of it is left to see, and where that is, from the finished frame.
         //
@@ -387,9 +429,21 @@ internal static class StarShaders
         // moons, any of it, to the pixel. The Sun as it LOOKS - its disc and the white ring the
         // profile saturates past the limb - is sampled at rsSunSamples points on a sunflower
         // spiral, spread evenly over its area. A sample lets the Sun's light through unless
-        // something drawn nearer than the Sun covers it or it is off the frame, and the air
-        // along its own ray dims what it lets through, since air writes no depth. The Sun's own
-        // sphere writes none either, so it cannot hide itself.
+        // something drawn nearer than the Sun covers it, and the air along its own ray dims what it
+        // lets through, since air writes no depth. The Sun's own sphere writes none either, so it
+        // cannot hide itself. Places are on the Sun's plane (rsSunOnPlane), which is the screen for
+        // a Sun far off.
+        //
+        // THE FRAME'S EDGE COVERS NOTHING. A sample off the frame has no depth to read, and used to
+        // count as covered. So a Sun crossing the edge of the screen lost its glare as it went, the
+        // glow drew back to the part still in view, and the disc stood bare at the edge (user,
+        // 2026-10-08, from Mercury's orbit inward); and low over a star, where a hundredth of the
+        // disc is on the screen, there was a hundredth of the glare, or none. But the screen's edge
+        // is not in front of the Sun. A sample off the frame is now judged by what can be known of
+        // it: the bodies on its sight line, worked out as for a star (rsSunOffFrame), and otherwise
+        // open. The glare is then the whole Sun's, round, from its own centre, on or off the screen.
+        // It leaves with the Sun: as the last rsSunFrameInPx of the Sun as it looks go over the
+        // edge, or the whole of a Sun smaller than that (rsSunFrameFade).
         //
         // Each sample reads the four depth texels round it, weighted by how near it lies to
         // each, so it dims smoothly as an edge crosses it rather than going out at once. And the
@@ -400,19 +454,90 @@ internal static class StarShaders
         // The glare is the light that got in. It is as strong as what the samples let through,
         // by the same law as distance (rsGlareLevel), and it radiates from where that light is:
         // their centre, weighted by it. A hull across three quarters of the Sun leaves the glare
-        // coming from the sliver still in view, a limb lifts it as the Sun sets into the air, and
-        // the frame's edge keeps it on the part still on screen - where before it came from a
-        // centre that was out of sight in every one of those cases. The part left open, as a disc
-        // of the same area, is what the glare's glow starts at and widens its needles by.
+        // coming from the sliver still in view, and a limb lifts it as the Sun sets into the air -
+        // where before it came from a centre that was out of sight in both of those cases. The part
+        // left open, as a disc of the same area, is what the glare's glow starts at and widens its
+        // needles by.
         const int rsSunSamples = 256;
+        const float rsSunFrameInPx = 48.0;          // how far into the frame the Sun reaches before its glare is whole
         const int rsSunGroup = 64;                  // the pass's workgroup, 8 by 8
+        // One centre and one round disc stand for the Sun well while what is left of it is near
+        // enough round. A large disc with a planet or a hull across it is not: the round stand-in
+        // of a 40 pixel disc a third covered reaches 14 pixels over the planet, and laid its glow
+        // there (user, 2026-10-06, of the crescent suns of Barnard's Star's close planets).
+        //
+        // Drawing the Sun as several patches, each with a glare of its own, was tried, and it was
+        // plainly several glares (user, 2026-10-07): a patch throws the whole pattern from its
+        // own centre, and more patches are only more copies. So it stays ONE glare, from the one
+        // centre where the light is, and what changes is where its glow starts: at the outline of
+        // what is left of the Sun, in place of the edge of a round disc of the same area. For a
+        // whole disc the two are the same thing.
+        //
+        // The outline is traced by rays from the Sun's centre, rsSunRays of them, two to an
+        // invocation. Each is walked out to the limb, in steps that shorten toward it, where a
+        // crescent is thin, and the first and the last open point on it are found to a fraction
+        // of a pixel by halving. What lies between a ray's two is taken as open, so a strut across
+        // the Sun leaves no hole in it: the glare lies over a strut anyway. A pixel's distance
+        // from the outline is its distance from the line through those points (rsSunFromShape).
+        //
+        // The outline is used by how far the open part is from round: how much further its
+        // points lie from their middle than a disc of its area would have them, in pixels. That
+        // is 0 for a whole disc and about a third of the radius for a half or a crescent, so it
+        // follows the size of the miss on the screen: a large disc takes its shape as soon as
+        // something crosses it, and the Sun from Earth, 9 pixels with its ring, stays a point
+        // however it is covered. Faded in over the range, so nothing steps, and the rays are
+        // only traced while it is in use.
+        const float rsSunShapeFromPx = 3.0;
+        const float rsSunShapeByPx = 6.0;
+        const int rsSunRays = 128;
+        const int rsSunRaySteps = 16;
+        const int rsSunRayHalvings = 5;
         shared vec4 rsSunShare[rsSunGroup];
+        shared vec4 rsSunShape[rsSunGroup];
+        // A ray: its first and last open point, in pixels from the Sun's centre (-1: none), and
+        // its direction.
+        shared vec4 rsSunRay[rsSunRays];
+        // Where the open part ends between an open ray and a shut one beside it, the end is found
+        // too: the turn at which it stops being open, a quarter and three quarters of the way
+        // along the open ray's span, toward the next ray (xy) and toward the one before (zw).
+        // Left at the open ray itself, an edge running straight out from the Sun's centre, as a
+        // half-covered Sun's does, was up to a ray's spacing out: 5 pixels at the limb of a 100
+        // pixel disc.
+        shared vec4 rsSunEnd[rsSunRays];
+        // A sliver. The samples lie evenly over the Sun, a ninth of its radius apart, so on a
+        // large disc a crescent thinner than that passes between them: the last of a star going
+        // behind a planet was a bright crescent with no glare at all (user, 2026-10-08). The rays
+        // do not miss it: they are walked out to the limb in steps that shorten toward it. So on
+        // a disc this wide, while the samples find little of it open and something of its limb
+        // is, the rays are traced as well, and what they found open is taken in place of the
+        // samples' answer, faded in as the samples run out. A ray stands for its slice of the
+        // disc, between its two open points, with the air's share of the light along it.
+        const float rsSunSliverPx = 24.0;       // the Sun at least this wide in radius: its samples are 2.7 px apart
+        const float rsSunSliverFrom = 4.0;      // samples open: at this few the rays' answer alone
+        const float rsSunSliverBy = 12.0;       // and at this many the samples' alone
+        shared float rsSunRayAir[rsSunRays];
 
-        // What the gather found, for rsSunBurst. No light means no glare from this group.
-        vec2 rsSunPx, rsSunCentre;
+        // What the gather found, for rsSunBurst. No light means no glare from this group. The centre
+        // of the light is a place on the Sun's plane.
+        vec2 rsSunCentre;
+        // A sight line's turn for a pixel across the screen where the sprite's Sun is, and for one up it.
+        vec3 rsSunPerX = vec3(0.0), rsSunPerY = vec3(0.0);
         float rsSunPeak, rsSunDisc, rsSunLight = 0.0, rsSunOpen;
         vec3 rsSunHue = vec3(1.0);
         float rsSunCloud = 1.0, rsSunRing = 1.0;
+        // How far the outline is used, and the disc the needles and lobes are blurred by when it
+        // is: as wide as the open part lies about its middle.
+        float rsSunShaped = 0.0, rsSunWide = 0.0;
+        // The outline is used as far as the needles could reach, from the Sun's centre, and given
+        // up over the next rsSunShapeFadePx: out there only the veil is left, which a round
+        // stand-in serves as well, and the veil reaches far enough that tracing the rays for all
+        // of it would double their cost. A sliver's is used everywhere: the rays are its light.
+        float rsSunShapeEnds = 0.0, rsSunSliver = 0.0;
+        const float rsSunShapeFadePx = 64.0;
+        // The Sun as the frame has it past white: how far from its centre that reaches, in pixels
+        // (its disc, and the ring its sprite's profile holds past the limb), and its depth, so
+        // that only what is the Sun is held to its hue (rsSunOver). Zero: the Sun is not in view.
+        float rsSunHoldPx = 0.0, rsSunDepthSeen = 0.0;
 
         // The colour sunlight arrives in along a direction, at unit luminance: the engine's own
         // transmittance, the table the ground is lit by, for a camera inside the air. The raw
@@ -437,85 +562,445 @@ internal static class StarShaders
             return luma > 1e-20 ? light / luma : vec3(1.0);
         }
 
+        // The sight line of a place on the Sun's plane, for its air and for what may cover it: for the
+        // sprite the Sun's own, turned the way the engine's pixels turn where it is on the screen.
+        vec3 rsSunSight(vec2 offset)
+        {
+            if (rsSunTurned >= 1.0) return rsSunPlaneRay(offset);
+            vec3 byScreen = normalize(rsSunToward + rsSunPerX * offset.x + rsSunPerY * offset.y);
+            return rsSunTurned <= 0.0 ? byScreen : normalize(mix(byScreen, rsSunPlaneRay(offset), rsSunTurned));
+        }
+
+        // Whether a sight line toward the Sun is clear of the bodies round about, for a place the frame
+        // does not hold: the celestial block's spheres, as rsVisibility takes them for a point. Terrain
+        // and vessels off the frame are not known, and are taken as not there.
+        float rsSunOffFrame(vec3 toward)
+        {
+            float open = 1.0;
+            for (int i = 0; i < global.celestial.bodyCount; i++)
+            {
+                vec4 body = global.celestial.bodies[i];
+                float d = length(body.xyz);
+                if (d < 1.0 || d >= rsSunAway * 0.9999) continue;
+                float cosSep = dot(body.xyz / d, toward);
+                if (cosSep <= 0.0) continue;
+                float sep = acos(clamp(cosSep, -1.0, 1.0));
+                float limb = asin(clamp(body.w / d, 0.0, 1.0));
+                float soft = limb * 0.002;
+                open = min(open, smoothstep(limb - soft, limb + soft, sep));
+                if (open <= 0.0) return 0.0;
+            }
+            return open;
+        }
+
+        // How much of the Sun's light a place on its plane lets through, by the four texels round
+        // where that is on the screen: nothing where the depth has something nearer than the Sun
+        // (reversed: nearer is larger), and off the frame what rsSunOffFrame can tell.
+        float rsSunOpenAt(vec2 offset, ivec2 dim, float sunDepth)
+        {
+            vec2 f = rsSunOnScreen(offset, vec2(dim)) - 0.5;
+            ivec2 first = ivec2(floor(f));
+            vec2 frac = f - vec2(first);
+            float open = 0.0, unseen = 0.0;
+            for (int n = 0; n < 4; n++)
+            {
+                ivec2 texel = first + ivec2(n & 1, n >> 1);
+                float share = ((n & 1) != 0 ? frac.x : 1.0 - frac.x) * ((n >> 1) != 0 ? frac.y : 1.0 - frac.y);
+                if (any(lessThan(texel, ivec2(0))) || any(greaterThanEqual(texel, dim)))
+                {
+                    unseen += share;
+                    continue;
+                }
+                if (texelFetch(samplerDepth, texel, 0).r > sunDepth) continue;
+                open += share;
+            }
+            if (unseen > 0.0) open += unseen * rsSunOffFrame(rsSunSight(offset));
+            return open;
+        }
+
+        // The least angle between two directions on the sky's sphere and a third: from s to the arc
+        // from a to b (the short way).
+        float rsArcAngle(vec3 s, vec3 a, vec3 b)
+        {
+            vec3 n = cross(a, b);
+            float len = length(n);
+            if (len > 1e-9)
+            {
+                n /= len;
+                float off = dot(s, n);
+                vec3 foot = s - off * n;
+                if (dot(cross(a, foot), n) >= 0.0 && dot(cross(foot, b), n) >= 0.0)
+                    return asin(clamp(abs(off), 0.0, 1.0));
+            }
+            return acos(clamp(max(dot(s, a), dot(s, b)), -1.0, 1.0));
+        }
+
+        // How much of its glare a Sun at the frame's edge keeps: all of it once the Sun as it looks
+        // reaches rsSunFrameInPx into the frame (or is wholly in it, if it is smaller), none once it
+        // has left. By how near the frame comes to the Sun's centre, on the Sun's plane: for the
+        // sprite the distance from its pixel to the screen's rectangle, for the sphere the least angle
+        // from its centre to the frame's four edges, as pixels.
+        float rsSunFrameFade(vec2 frame, float looksPx)
+        {
+            float byPixel = length(max(max(-rsSunPx, rsSunPx - frame), vec2(0.0)));
+            float least = byPixel;
+            if (rsSunTurned > 0.0)
+            {
+                float byAngle = 0.0;
+                vec2 centre = rsSunOnScreen(vec2(0.0), frame);
+                if (any(lessThan(centre, vec2(0.0))) || any(greaterThan(centre, frame)))
+                {
+                    vec3 c0 = rsPixelDirection(vec2(0.0)), c1 = rsPixelDirection(vec2(frame.x, 0.0));
+                    vec3 c2 = rsPixelDirection(frame), c3 = rsPixelDirection(vec2(0.0, frame.y));
+                    float angle = min(min(rsArcAngle(rsSunToward, c0, c1), rsArcAngle(rsSunToward, c1, c2)),
+                                      min(rsArcAngle(rsSunToward, c2, c3), rsArcAngle(rsSunToward, c3, c0)));
+                    byAngle = rsSunFocal * angle;
+                }
+                least = rsSunTurned >= 1.0 ? byAngle : mix(byPixel, byAngle, rsSunTurned);
+            }
+            return smoothstep(0.0, min(2.0 * looksPx, rsSunFrameInPx), looksPx - least);
+        }
+
+        // One ray of the Sun's outline: its first and last open point, in pixels from the Sun's
+        // centre, or -1 twice where nothing on it is open. See rsSunRays.
+        vec2 rsSunTrace(vec2 along, ivec2 dim, float sunDepth)
+        {
+            float inner = -1.0, outer = -1.0;           // the first and the last open place walked over
+            float innerShut = -1.0, outerShut = -1.0;   // and the shut one before the first, after the last
+            float before = 0.0;
+            for (int k = 0; k <= rsSunRaySteps; k++)
+            {
+                float back = float(rsSunRaySteps - k) / float(rsSunRaySteps);
+                float rho = rsSunDisc * (1.0 - back * back);
+                if (rsSunOpenAt(along * rho, dim, sunDepth) >= 0.5)
+                {
+                    if (inner < 0.0)
+                    {
+                        inner = rho;
+                        innerShut = k > 0 ? before : -1.0;
+                    }
+                    outer = rho;
+                    outerShut = -1.0;
+                }
+                else if (outer >= 0.0 && outerShut < 0.0)
+                    outerShut = rho;
+                before = rho;
+            }
+            if (inner < 0.0) return vec2(-1.0);
+            // Open at the centre itself: the open part starts there. Otherwise its edge lies
+            // between the last shut place and the first open one.
+            if (innerShut < 0.0)
+                inner = 0.0;
+            else
+            {
+                for (int h = 0; h < rsSunRayHalvings; h++)
+                {
+                    float middle = 0.5 * (innerShut + inner);
+                    if (rsSunOpenAt(along * middle, dim, sunDepth) >= 0.5) inner = middle;
+                    else innerShut = middle;
+                }
+                inner = 0.5 * (innerShut + inner);
+            }
+            // Open at the limb: the open part ends there. Otherwise likewise.
+            if (outerShut >= 0.0)
+            {
+                for (int h = 0; h < rsSunRayHalvings; h++)
+                {
+                    float middle = 0.5 * (outer + outerShut);
+                    if (rsSunOpenAt(along * middle, dim, sunDepth) >= 0.5) outer = middle;
+                    else outerShut = middle;
+                }
+                outer = 0.5 * (outer + outerShut);
+            }
+            return vec2(inner, outer);
+        }
+
+        // The end of the open part beside a ray: the turns at which it stops being open, going
+        // from the ray at `turn` toward its shut neighbour `toward` away, a quarter and three
+        // quarters of the way along the ray's open span. See rsSunEnd.
+        vec2 rsSunEndOf(vec2 span, float turn, float toward, ivec2 dim, float sunDepth)
+        {
+            vec2 found;
+            for (int part = 0; part < 2; part++)
+            {
+                float rho = mix(span.x, span.y, part == 0 ? 0.25 : 0.75);
+                float open = 0.0, shut = 1.0;           // shares of the way to the neighbour
+                for (int h = 0; h < rsSunRayHalvings; h++)
+                {
+                    float middle = 0.5 * (open + shut);
+                    float at = turn + toward * middle;
+                    if (rsSunOpenAt(rho * vec2(cos(at), sin(at)), dim, sunDepth) >= 0.5) open = middle;
+                    else shut = middle;
+                }
+                found[part] = turn + toward * 0.5 * (open + shut);
+            }
+            return found;
+        }
+
+        // A point's distance from a line between two others, squared.
+        float rsSegment2(vec2 p, vec2 a, vec2 b)
+        {
+            vec2 ab = b - a;
+            float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-9), 0.0, 1.0);
+            vec2 d = p - a - t * ab;
+            return dot(d, d);
+        }
+
+        // A place's distance from the outline the rays traced, in pixels: 0 inside it. The place is on
+        // the Sun's plane, as the rays are. Read after the gather's second barrier, when every ray is in.
+        float rsSunFromShape(vec2 q)
+        {
+            // Inside: between the pixel's two rays, both open, and between their open points.
+            float turn = atan(q.y, q.x);
+            if (turn < 0.0) turn += 6.28318531;
+            float u = turn / 6.28318531 * float(rsSunRays);
+            int j0 = int(floor(u)) % rsSunRays;
+            int j1 = (j0 + 1) % rsSunRays;
+            vec4 left = rsSunRay[j0], right = rsSunRay[j1];
+            float away = length(q);
+            if (left.y >= 0.0 && right.y >= 0.0)
+            {
+                float f = fract(u);
+                if (away >= mix(left.x, right.x, f) && away <= mix(left.y, right.y, f)) return 0.0;
+            }
+            else if (left.y >= 0.0 || right.y >= 0.0)
+            {
+                // One open, one shut: inside as far as the end found between them.
+                bool forward = left.y >= 0.0;
+                vec4 end = forward ? left : right;
+                vec2 turns = forward ? rsSunEnd[j0].xy : rsSunEnd[j1].zw;
+                if (away >= end.x && away <= end.y)
+                {
+                    float base = 6.28318531 * float(forward ? j0 : j1) / float(rsSunRays);
+                    float along = clamp((away - mix(end.x, end.y, 0.25)) / max(0.5 * (end.y - end.x), 1e-6), 0.0, 1.0);
+                    float endFrom = mix(turns.x, turns.y, along) - base;
+                    float mine = turn - base;
+                    mine -= 6.28318531 * round(mine / 6.28318531);
+                    if (forward ? mine <= endFrom : mine >= endFrom) return 0.0;
+                }
+            }
+            // Outside: the nearest of the lines from ray to ray, along the open part's outer edge
+            // and its inner one, and of the rays that end it.
+            float best = 1e30;
+            for (int j = 0; j < rsSunRays; j++)
+            {
+                vec4 here = rsSunRay[j], next = rsSunRay[(j + 1) % rsSunRays];
+                bool hereOpen = here.y >= 0.0, nextOpen = next.y >= 0.0;
+                if (!hereOpen && !nextOpen) continue;
+                if (hereOpen && nextOpen)
+                {
+                    best = min(best, rsSegment2(q, here.zw * here.y, next.zw * next.y));
+                    if (max(here.x, next.x) > 0.25)
+                        best = min(best, rsSegment2(q, here.zw * here.x, next.zw * next.x));
+                }
+                else
+                {
+                    // The open part ends between these two: along the end found there, from the
+                    // open ray's first open point to its last, and across to it from the ray's own.
+                    vec4 end = hereOpen ? here : next;
+                    vec2 turns = hereOpen ? rsSunEnd[j].xy : rsSunEnd[(j + 1) % rsSunRays].zw;
+                    vec2 low = vec2(cos(turns.x), sin(turns.x)), high = vec2(cos(turns.y), sin(turns.y));
+                    vec2 p0 = low * end.x, p1 = low * mix(end.x, end.y, 0.25);
+                    vec2 p2 = high * mix(end.x, end.y, 0.75), p3 = high * end.y;
+                    best = min(best, min(rsSegment2(q, p0, p1), min(rsSegment2(q, p1, p2), rsSegment2(q, p2, p3))));
+                    best = min(best, rsSegment2(q, end.zw * end.y, p3));
+                    if (end.x > 0.25) best = min(best, rsSegment2(q, end.zw * end.x, p0));
+                }
+            }
+            return sqrt(best);
+        }
+
         // Called at the top of main by every invocation, before any of them can return: the
-        // barrier inside holds only where the whole group arrives.
+        // barriers inside hold only where the whole group arrives.
         void rsSunGather(ivec2 dim)
         {
             rsSunLight = 0.0;
-            if (rsBurstStrength() <= 0.0) return;
-            vec3 sunEgo = global.lighting.sunPosition.xyz;
-            float dist = length(sunEgo);
-            if (dist <= 0.0) return;
-            vec4 clip = global.camera.viewProjection * vec4(sunEgo, 1.0);
-            if (clip.w <= 0.0) return;                              // behind the camera
-            rsSunPx = (clip.xy / clip.w * 0.5 + 0.5) * vec2(dim);
+            rsSunHoldPx = 0.0;
+            rsSunSliver = 0.0;
+            // Where the Sun is, on the screen and on its own plane; nothing if none of it can show.
+            if (!rsSunPlaneSet(vec2(dim))) return;
+            float dist = rsSunAway;
 
             // The whole Sun, before anything is in the way: how big it looks, and how far its
             // glare could reach from anywhere in that.
-            float mag = rsSunAbsMag + 5.0 * log(dist / (10.0 * rsParsecMetres)) * 0.4342944819;
+            float mag = rsLightAbsMag() + 5.0 * log(dist / (10.0 * rsParsecMetres)) * 0.4342944819;
             rsSunPeak = pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef))
                       * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
-            rsSunDisc = max(intBitsToFloat(global.lighting.lpPad4), 0.0);
+            rsSunDisc = rsSunDiscPx();
             float whitePx = rsPsfCore * sqrt(max(pow(max(rsSunPeak / rsMaxOutput, 1.0),
                                                      1.0 / rsPsfBeta) - 1.0, 0.0));
             // The white ring is our sprite's, and it draws in to the limb as the sphere takes
             // over (see Star.frag): once the sphere is whole, the Sun looks like its disc.
             float looksPx = rsSunDisc + whitePx * (1.0 - rsSphereShown());
+            // And how far it is past the blooms' white, for rsSunOver, which holds the Sun whether
+            // or not there is a burst to draw. The depth as rsSunPlaneSet has it: nothing lies
+            // behind a Sun past the far plane.
+            rsSunDepthSeen = rsSunDepth;
+            rsSunHoldPx = rsSunDisc + (1.0 - rsSphereShown()) * rsPsfCore
+                        * sqrt(max(pow(max(rsSunPeak / rsBloomWhite, 1.0), 1.0 / rsPsfBeta) - 1.0, 0.0));
+            if (rsBurstStrength() <= 0.0) return;
             float reach = rsGlareReachPx(rsGlareLevel(rsSunPeak), rsSunDisc);
             // Only groups the glare could reach gather. Nothing here is the invocation's own,
             // so every invocation of a group answers the same way and the group stays together.
             vec2 corner = vec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy);
-            vec2 nearest = clamp(rsSunPx, corner, corner + vec2(gl_WorkGroupSize.xy));
-            if (reach <= 0.0 || distance(nearest, rsSunPx) > reach + looksPx) return;
+            // The group's nearest to the Sun's centre, on the Sun's plane. For the sprite that is
+            // the screen and exact. For the sphere, the group's middle less the group's own
+            // size: a place's distance from the centre changes by a pixel a pixel at the most,
+            // an angle being largest in pixels at the middle of the screen.
+            float nearest = distance(clamp(rsSunPx, corner, corner + vec2(gl_WorkGroupSize.xy)), rsSunPx);
+            if (rsSunTurned > 0.0)
+                nearest = max(length(rsSunOnPlane(corner + 0.5 * vec2(gl_WorkGroupSize.xy)))
+                              - 0.75 * length(vec2(gl_WorkGroupSize.xy)), 0.0);
+            if (reach <= 0.0 || nearest > reach + looksPx) return;
+            rsSunShapeEnds = max(rsNeedleReachPx(rsGlareLevel(rsSunPeak), rsSunDisc), rsSunDisc) + looksPx - rsSunDisc;
+            bool shapeHere = nearest <= rsSunShapeEnds + rsSunShapeFadePx;
 
-            // The camera's far plane is one AU - exactly - so past Earth's orbit the Sun lies
-            // beyond it and its reversed depth goes negative. Every sky pixel is then "nearer"
-            // than the Sun, and the burst was judged hidden and went out. Clamped at zero, which
-            // is what the engine's own flare does with its sun depth: the Sun is then behind
-            // everything drawn, which a Sun past the far plane is, and in front of empty sky.
-            float sunDepth = max(clip.z / clip.w, 0.0);
-            // Each sample's sight line, for its air: the Sun's, turned across the screen the way
-            // the engine's pixels turn.
+            float sunDepth = rsSunDepth;
+            // Each sample's sight line, for its air (rsSunSight): for the sprite the Sun's, turned
+            // the way the engine's pixels turn where it is on the screen.
             bool air = rsHasAir();
-            vec3 toSun = sunEgo / dist;
-            vec3 base = rsPixelDirection(rsSunPx);
-            vec3 perX = rsPixelDirection(rsSunPx + vec2(1.0, 0.0)) - base;
-            vec3 perY = rsPixelDirection(rsSunPx + vec2(0.0, 1.0)) - base;
+            if (rsSunTurned < 1.0)
+            {
+                vec3 base = rsPixelDirection(rsSunPx);
+                rsSunPerX = rsPixelDirection(rsSunPx + vec2(1.0, 0.0)) - base;
+                rsSunPerY = rsPixelDirection(rsSunPx + vec2(0.0, 1.0)) - base;
+            }
+            // And how much of its glare the frame's edge leaves it: see rsSunFrameFade.
+            float inFrame = rsSunFrameFade(vec2(dim), looksPx);
+            if (inFrame <= 0.0) return;
             vec4 mine = vec4(0.0);          // light, open, and the light's weighted place
+            vec4 shape = vec4(0.0);         // what is open: its place from the Sun's centre, its spread, and its limb
             for (int k = 0; k < rsSunSamples / rsSunGroup; k++)
             {
                 int i = int(gl_LocalInvocationIndex) + rsSunGroup * k;
                 float t = (float(i) + 0.5) / float(rsSunSamples);
                 float turn = float(i) * 2.39996323;                 // the golden angle
                 vec2 offset = looksPx * sqrt(t) * vec2(cos(turn), sin(turn));
-                vec2 at = rsSunPx + offset;
-                // Through the four texels round it: nothing off the frame, and nothing where the
-                // depth has something nearer than the Sun (reversed: nearer is larger).
-                vec2 f = at - 0.5;
-                ivec2 first = ivec2(floor(f));
-                vec2 frac = f - vec2(first);
-                float open = 0.0;
-                for (int n = 0; n < 4; n++)
-                {
-                    ivec2 texel = first + ivec2(n & 1, n >> 1);
-                    if (any(lessThan(texel, ivec2(0))) || any(greaterThanEqual(texel, dim))) continue;
-                    if (texelFetch(samplerDepth, texel, 0).r > sunDepth) continue;
-                    open += ((n & 1) != 0 ? frac.x : 1.0 - frac.x) * ((n >> 1) != 0 ? frac.y : 1.0 - frac.y);
-                }
+                float open = rsSunOpenAt(offset, dim, sunDepth);
                 float light = open;
                 if (air && open > 0.0)
-                    light *= rsAirVisibility(normalize(toSun + perX * offset.x + perY * offset.y), dist);
-                mine += vec4(light, open, light * at);
+                    light *= rsAirVisibility(rsSunSight(offset), dist);
+                mine += vec4(light, open, light * offset);
+                shape.xyz += open * vec3(offset, dot(offset, offset));
             }
+            // And the limb itself, at this invocation's two rays, a pixel in from it: whether any
+            // of it is open, which is what says a sliver may be there (rsSunSliverPx).
+            if (looksPx >= rsSunSliverPx)
+                for (int n = 0; n < rsSunRays / rsSunGroup; n++)
+                {
+                    float turn = 6.28318531 * float(int(gl_LocalInvocationIndex) * (rsSunRays / rsSunGroup) + n)
+                               / float(rsSunRays);
+                    shape.w += rsSunOpenAt(max(rsSunDisc - 1.0, 0.0) * vec2(cos(turn), sin(turn)), dim, sunDepth);
+                }
             rsSunShare[gl_LocalInvocationIndex] = mine;
+            rsSunShape[gl_LocalInvocationIndex] = shape;
             memoryBarrierShared();
             barrier();
             vec4 sum = vec4(0.0);
+            vec4 open3 = vec4(0.0);
             for (int j = 0; j < rsSunGroup; j++)
+            {
                 sum += rsSunShare[j];
+                open3 += rsSunShape[j];
+            }
             rsSunLight = sum.x / float(rsSunSamples);
             rsSunOpen = sum.y / float(rsSunSamples);
-            rsSunCentre = sum.x > 0.0 ? sum.zw / sum.x : rsSunPx;
+            rsSunCentre = sum.x > 0.0 ? sum.zw / sum.x : vec2(0.0);
+
+            // How far the open part is from round, in pixels, and how wide it lies. By what is
+            // open, not by its light: air dimming a whole Sun leaves it a whole disc.
+            rsSunShaped = 0.0;
+            rsSunWide = rsSunDisc;
+            if (sum.y > 0.0)
+            {
+                vec2 middle = open3.xy / sum.y;
+                float lies = max(open3.z / sum.y - dot(middle, middle), 0.0);   // mean square, from its middle
+                float equal = looksPx * sqrt(rsSunOpen);            // the round disc of the same area
+                float beyond = lies - 0.5 * equal * equal;
+                rsSunShaped = smoothstep(rsSunShapeFromPx, rsSunShapeByPx, sqrt(max(beyond, 0.0)));
+                // A disc's points lie its radius over root two from its middle, in the mean.
+                rsSunWide = rsSunDisc * sqrt(2.0 * lies) / max(looksPx, 1e-3);
+            }
+            // How far the samples have run out on a disc wide enough to hide a sliver from them,
+            // with some of its limb open: see rsSunSliverPx.
+            float sliver = looksPx >= rsSunSliverPx && open3.w > 0.0
+                         ? 1.0 - smoothstep(rsSunSliverFrom, rsSunSliverBy, sum.y) : 0.0;
+            // The outline, while it is in use and where: see rsSunShapeEnds. Every invocation of
+            // the group has the same answer to that, from the same sums and the group's own place,
+            // so the group is still together at the second barrier.
+            if ((rsSunShaped > 0.0 && shapeHere) || sliver > 0.0)
+            {
+                for (int n = 0; n < rsSunRays / rsSunGroup; n++)
+                {
+                    int j = int(gl_LocalInvocationIndex) * (rsSunRays / rsSunGroup) + n;
+                    float turn = 6.28318531 * float(j) / float(rsSunRays);
+                    vec2 along = vec2(cos(turn), sin(turn));
+                    vec2 span = rsSunTrace(along, dim, sunDepth);
+                    rsSunRay[j] = vec4(span, along);
+                    float through = 1.0;
+                    if (air && sliver > 0.0 && span.y >= 0.0)
+                    {
+                        vec2 middle = along * 0.5 * (span.x + span.y);
+                        through = rsAirVisibility(rsSunSight(middle), dist);
+                    }
+                    rsSunRayAir[j] = through;
+                }
+                memoryBarrierShared();
+                barrier();
+                // And where the open part ends beside one of this invocation's rays: see rsSunEnd.
+                float spacing = 6.28318531 / float(rsSunRays);
+                for (int n = 0; n < rsSunRays / rsSunGroup; n++)
+                {
+                    int j = int(gl_LocalInvocationIndex) * (rsSunRays / rsSunGroup) + n;
+                    vec4 here = rsSunRay[j];
+                    vec4 ends = vec4(-100.0);
+                    if (here.y >= 0.0)
+                    {
+                        float turn = spacing * float(j);
+                        if (rsSunRay[(j + 1) % rsSunRays].y < 0.0)
+                            ends.xy = rsSunEndOf(here.xy, turn, spacing, dim, sunDepth);
+                        if (rsSunRay[(j + rsSunRays - 1) % rsSunRays].y < 0.0)
+                            ends.zw = rsSunEndOf(here.xy, turn, -spacing, dim, sunDepth);
+                    }
+                    rsSunEnd[j] = ends;
+                }
+                memoryBarrierShared();
+                barrier();
+                if (sliver > 0.0)
+                {
+                    // What the rays found open. A slice between radii a and b has its area at
+                    // 2/3 (b^3 - a^3) / (b^2 - a^2) from the centre in the mean, and (a^2 + b^2) / 2
+                    // in the mean square.
+                    float area = 0.0, lit = 0.0, square = 0.0;
+                    vec2 middle = vec2(0.0), place = vec2(0.0);
+                    for (int j = 0; j < rsSunRays; j++)
+                    {
+                        vec4 ray = rsSunRay[j];
+                        float inner2 = ray.x * ray.x, outer2 = ray.y * ray.y;
+                        if (ray.y < 0.0 || outer2 <= inner2) continue;
+                        float part = 0.5 * (outer2 - inner2);
+                        float mean = (ray.y * outer2 - ray.x * inner2) / (1.5 * (outer2 - inner2));
+                        area += part;
+                        middle += part * mean * ray.zw;
+                        square += part * 0.5 * (outer2 + inner2);
+                        lit += part * rsSunRayAir[j];
+                        place += part * rsSunRayAir[j] * mean * ray.zw;
+                    }
+                    // A slice's share of the Sun as it looks: (2 pi / rays) over pi looks^2.
+                    float slice = 2.0 / (float(rsSunRays) * looksPx * looksPx);
+                    rsSunOpen = mix(rsSunOpen, area * slice, sliver);
+                    rsSunLight = mix(rsSunLight, lit * slice, sliver);
+                    rsSunCentre = mix(rsSunCentre, lit > 0.0 ? place / lit : vec2(0.0), sliver);
+                    if (area > 0.0)
+                    {
+                        middle /= area;
+                        float lies = max(square / area - dot(middle, middle), 0.0);
+                        rsSunWide = mix(rsSunWide, rsSunDisc * sqrt(2.0 * lies) / max(looksPx, 1e-3), sliver);
+                        // A sliver is as far from round as a shape gets: its glare starts at its outline.
+                        rsSunSliver = sliver;
+                    }
+                }
+            }
 
             // Clouds, which neither the depth nor the air above sees: the engine's cloud shadow,
             // the direct sunlight it lights the ground and vessels by, read where the camera is.
@@ -526,10 +1011,13 @@ internal static class StarShaders
             // before them; only this burst, drawn after, needed telling.
             rsSunRing = exp(-max(unpackHalf2x16(uint(global.celestial.pad2)).y, 0.0));
             // And in the colour the light arrives in, from where the light that got in is.
-            rsSunHue = rsArrivingHue(rsPixelDirection(rsSunCentre));
+            rsSunHue = rsArrivingHue(rsSunSight(rsSunCentre));
+            // The frame's edge last: it takes the glare down as the Sun leaves, not its shape.
+            rsSunLight *= inFrame;
         }
 
-        vec3 rsSunBurst(vec2 pixel, ivec2 dim)
+        // The Sun's glare at a place on the Sun's plane (rsSunOnPlane).
+        vec3 rsSunBurst(vec2 place)
         {
             if (rsSunLight <= 0.0 || rsSunCloud <= 0.0) return vec3(0.0);
             float discSeen = rsSunDisc * sqrt(rsSunOpen);
@@ -546,11 +1034,187 @@ internal static class StarShaders
             // the disc stops outshining the cloud around it. Rings the same way: they scatter
             // the Sun's light too, and it is their direct beam that makes the glare.
             float level = rsGlareLevel(rsSunPeak * rsSunLight) * rsSunCloud * rsSunRing;
-            return tint * rsGlare(pixel - rsSunCentre, rsGlareReachPx(level, discSeen), discSeen, level);
+            // The one glare, its glow starting at the round stand-in's edge, at the outline of
+            // what is left, or part way between: see rsSunRays.
+            vec2 offset = place - rsSunCentre;
+            float outline = max(rsSunSliver, rsSunShaped * (1.0 - smoothstep(rsSunShapeEnds, rsSunShapeEnds + rsSunShapeFadePx,
+                                                                              length(place))));
+            vec3 burst = vec3(0.0);
+            if (outline < 1.0)
+                burst = (1.0 - outline)
+                      * rsGlareOf(offset, rsGlareReachPx(level, discSeen), discSeen, level,
+                                  max(length(offset) - discSeen, 0.0));
+            if (outline > 0.0)
+                burst += outline
+                       * rsGlareOf(offset, rsGlareReachPx(level, rsSunWide), rsSunWide, level,
+                                   rsSunFromShape(place));
+            // Held to what the blooms may see, as rsGlare holds a round source's, and then in the
+            // star's hue: burnt out, a red dwarf's glare is orange, not white. (Making it white
+            // beside a white disc was tried and was the wrong side to change: see rsSunOver.)
+            return tint * min(burst, vec3(rsBloomWhite));
+        }
+
+        // The frame with the Sun's burst over it, and the Sun held to its own hue where it burns
+        // out.
+        //
+        // The Sun's disc is drawn far past white, for the air to dim (rsMaxOutput), and what is
+        // past white shows white whatever its colour. Its glare is held at the blooms' white in
+        // the star's hue. For the Sun those are one white. For a red dwarf they were a white disc
+        // in an orange glare with a hard rim between them (user, 2026-10-07, of Proxima from close
+        // by), and the white was the wrong one of the two. The glare is the disc's own light, so
+        // they are one colour; and a red dwarf's surface is some five hundred times fainter than
+        // the Sun's, about a setting Sun's, which an eye sees as an orange disc. So where the
+        // frame shows the Sun itself, or its glare at its ceiling, the whole is held to the blooms'
+        // white in luminance and keeps its hue, and the disc runs into its glare without an edge.
+        // The Sun's own hue is near enough white that it looks as it did.
+        vec3 rsSunOver(vec3 frame, vec2 pixel, ivec2 dim)
+        {
+            if (rsSunHoldPx <= 0.0 && rsSunLight <= 0.0) return frame;     // no Sun in view: nothing to add, nothing to hold
+            vec2 place = rsSunOnPlane(pixel);
+            vec3 burst = rsSunBurst(place);
+            vec3 sum = frame + burst;
+            float held = clamp(dot(burst, rsLuma) / rsBloomWhite, 0.0, 1.0);
+            if (rsSunHoldPx > 0.0)
+            {
+                float inside = 1.0 - smoothstep(rsSunHoldPx - 1.0, rsSunHoldPx + 1.0, length(place));
+                // Only where it is the Sun that shows: nothing drawn nearer (reversed: nearer is larger).
+                if (inside > 0.0
+                    && texelFetch(samplerDepth, clamp(ivec2(pixel), ivec2(0), dim - 1), 0).r <= rsSunDepthSeen)
+                    held = max(held, inside);
+            }
+            float luma = dot(sum, rsLuma);
+            if (held <= 0.0 || luma <= rsBloomWhite) return sum;
+            return sum * (mix(luma, rsBloomWhite, held) / luma);
         }
         """;
 
-    private const string Tuning = """
+    /// <summary>The Sun's place on the screen, shared by the merge pass and the blooms' downsamples.</summary>
+    private const string SunPlane = """
+        // ---- the Sun's plane ----
+        // Where the Sun is on the screen, for everything worked out about its centre: the gather's
+        // samples, the glare, the hold, the blooms' cap.
+        //
+        // Far off, the Sun is our sprite: a round disc about its centre's pixel, whatever part of the
+        // screen it is on, and places are counted in screen pixels from that pixel. Close to, it is the
+        // engine's sphere, drawn in true perspective: toward the edge of a wide view a sphere's outline
+        // is an ellipse, up to twice as long as wide, and not about its centre's pixel; and from low
+        // over a star the centre is beside the view or behind it while the limb crosses the screen.
+        // Everything here took the Sun for the round disc, so the sphere stood out past it, raw (user,
+        // 2026-10-08: "the raw, unprocessed crisp disk appears from behind the glare ... like the glare
+        // can't handle the star being such a large source while also not being circular").
+        //
+        // So for the sphere, places are counted on the Sun's own plane: by the angle from the Sun's
+        // centre, in the pixels an angle is at the middle of the screen, and the way round it. There
+        // the sphere is a round disc exactly (rsSunDiscPx), wherever it is on the screen and whichever
+        // way the camera points, and its glare lies about it by angle, as an eye's does: as wide beside
+        // the limb of a star that fills the view as beside one that is a dot. (By the tangent of the
+        // angle, a flat picture's way, a glare beside a limb 80 degrees from the star's centre would be
+        // a thirtieth as wide.) The two are blended by how far the sphere has taken over from the
+        // sprite (rsSphereShown): between 44 and 88 radii the star is a few tens of pixels, and they
+        // differ by a pixel or two at the edge of a wide view.
+        vec2 rsSunPx = vec2(0.0);                   // the Sun's centre on the screen, in pixels, while it is ahead of the camera
+        float rsSunTurned = 0.0;                    // how far the Sun's plane is used
+        vec3 rsSunToward = vec3(0.0, 0.0, 1.0);     // unit, about the camera: to the Sun's centre,
+        vec3 rsSunAcross = vec3(1.0, 0.0, 0.0);     // and the screen's x and y, turned with the view to face it
+        vec3 rsSunUp = vec3(0.0, 1.0, 0.0);
+        float rsSunFocal = 1.0;                     // pixels to a radian at the middle of the screen, as rsLightDiscPx has them
+        float rsSunAway = 0.0;                      // the Sun's distance, in metres
+        // The Sun's depth, for what is in front of it (reversed: nearer is larger). The camera's far
+        // plane is one AU - exactly - so past Earth's orbit the Sun lies beyond it and its reversed
+        // depth goes negative. Every sky pixel is then "nearer" than the Sun, and the burst was judged
+        // hidden and went out. Clamped at zero, which is what the engine's own flare does with its sun
+        // depth: the Sun is then behind everything drawn, which a Sun past the far plane is, and in
+        // front of empty sky.
+        float rsSunDepth = 0.0;
+
+        // Sets the above for a frame of this size in pixels. False: nothing of the Sun can be in view.
+        bool rsSunPlaneSet(vec2 frame)
+        {
+            vec3 sunEgo = global.lighting.sunPosition.xyz;
+            rsSunAway = length(sunEgo);
+            if (rsSunAway <= 0.0) return false;
+            rsSunToward = sunEgo / rsSunAway;
+            vec4 clip = global.camera.viewProjection * vec4(sunEgo, 1.0);
+            rsSunTurned = rsSphereShown();
+            // Behind the camera: gone, unless it is the sphere whole, whose limb can still be ahead.
+            if (clip.w <= 0.0 && rsSunTurned < 1.0) return false;
+            rsSunPx = clip.w > 0.0 ? (clip.xy / clip.w * 0.5 + 0.5) * frame : vec2(0.0);
+            rsSunDepth = clip.w > 0.0 ? max(clip.z / clip.w, 0.0) : 0.0;
+            if (rsSunTurned <= 0.0) return true;
+            vec2 screen = vec2(global.camera.screenWidth, global.camera.screenHeight);
+            vec3 ahead = rsPixelDirection(0.5 * screen);
+            float facing = 1.0 + dot(ahead, rsSunToward);
+            if (facing < 1e-3)
+            {
+                // Dead astern, where no turn of the view is the least one. No sphere shows from there.
+                if (rsSunTurned >= 1.0) return false;
+                rsSunTurned = 0.0;
+                return true;
+            }
+            vec3 across = rsPixelDirection(0.5 * screen + vec2(64.0, 0.0));
+            vec3 up = rsPixelDirection(0.5 * screen + vec2(0.0, 64.0));
+            across = normalize(across - ahead * dot(across, ahead));
+            up = normalize(up - ahead * dot(up, ahead));
+            // The least turn that takes the view's axis to the Sun takes these two with it.
+            vec3 turn = (ahead + rsSunToward) / facing;
+            rsSunAcross = across - dot(across, rsSunToward) * turn;
+            rsSunUp = up - dot(up, rsSunToward) * turn;
+            rsSunFocal = 0.5 * abs(global.camera.projection[1][1]) * screen.y;
+            if (clip.w <= 0.0)
+            {
+                // The centre is behind the camera and has no depth: the limb's, then, which is as far
+                // as a sight line that grazes the sphere runs.
+                float size = global.lighting.sunRadius;
+                vec4 limb = global.camera.viewProjection
+                          * vec4(ahead * sqrt(max(rsSunAway * rsSunAway - size * size, 1e-6 * size * size)), 1.0);
+                rsSunDepth = limb.w > 0.0 ? max(limb.z / limb.w, 0.0) : 0.0;
+            }
+            return true;
+        }
+
+        // The Sun's disc on its plane, in pixels of radius: the sprite's, rsLightDiscPx, which is the
+        // sphere's across the middle of a flat picture (its focal length times the tangent of the
+        // sphere's angle), and for the sphere that angle itself.
+        float rsSunDiscPx()
+        {
+            float byScreen = rsLightDiscPx();
+            if (rsSunTurned <= 0.0) return byScreen;
+            return mix(byScreen, rsSunFocal * atan(byScreen / rsSunFocal), rsSunTurned);
+        }
+
+        // A screen pixel's place on the Sun's plane, in pixels from the Sun's centre.
+        vec2 rsSunOnPlane(vec2 pixel)
+        {
+            if (rsSunTurned <= 0.0) return pixel - rsSunPx;
+            vec3 along = rsPixelDirection(pixel);
+            vec2 side = vec2(dot(along, rsSunAcross), dot(along, rsSunUp));
+            float off = length(side);
+            vec2 turned = off > 1e-9 ? side * (rsSunFocal * atan(off, dot(along, rsSunToward)) / off) : vec2(0.0);
+            return rsSunTurned >= 1.0 ? turned : mix(pixel - rsSunPx, turned, rsSunTurned);
+        }
+
+        // The sight line of a place on the Sun's plane, about the camera: unit.
+        vec3 rsSunPlaneRay(vec2 offset)
+        {
+            float far = length(offset);
+            if (far < 1e-6) return rsSunToward;
+            float angle = far / rsSunFocal;
+            vec2 way = offset / far;
+            return cos(angle) * rsSunToward + sin(angle) * (way.x * rsSunAcross + way.y * rsSunUp);
+        }
+
+        // And back: where a place on the Sun's plane is, on a frame of this size. Far off the frame
+        // (-1e6) where it is behind the camera.
+        vec2 rsSunOnScreen(vec2 offset, vec2 frame)
+        {
+            if (rsSunTurned <= 0.0) return rsSunPx + offset;
+            vec4 clip = global.camera.viewProjection * vec4(rsSunPlaneRay(offset) * rsSunAway, 1.0);
+            vec2 turned = clip.w > 0.0 ? (clip.xy / clip.w * 0.5 + 0.5) * frame : vec2(-1e6);
+            return rsSunTurned >= 1.0 ? turned : mix(rsSunPx + offset, turned, rsSunTurned);
+        }
+        """;
+
+    private const string Tuning = $$"""
         // ---- Real Stars tuning ----
         // Our catalogue stores ABSOLUTE magnitude linearly in the byte: byte 1 is the faint
         // limit and each step is a tenth of a magnitude. make_star_binary.py writes it, along
@@ -559,7 +1223,7 @@ internal static class StarShaders
         const float rsMagFaint = 16.5;
         const float rsBytesPerMag = 10.0;
         const float rsParsecMetres = 3.0856775814913673e16;
-        const float rsSunAbsMag = 4.83;        // what the catalogue carries for the Sun
+        const float rsSunAbsMag = 4.83;        // the Sun's, until the C# side says which star lights the scene
         const float rsStarShell = 19.5;        // the radius the sky is drawn on, as stock does
         // The magnitude that peaks at 1.0 on screen. Lower makes the whole sky brighter.
         // At 5.0 a naked-eye star of magnitude 6 sits at 0.4, faint but present.
@@ -594,7 +1258,20 @@ internal static class StarShaders
         // back as a wide glow, and the global bloom mixes a tenth of a blur into the image. Both
         // drew a second glare around sources that carry their own. 1.5 is still white after the
         // global bloom takes its tenth, and half the threshold.
-        const float rsBloomWhite = 1.5;
+        const float rsBloomSeen = 1.5;
+        // White now over white at the game's default exposure (Exposure.cs). All of the above is
+        // at 1.25, the default. The player's setting multiplies the finished frame, so at a
+        // tenth of that 1.5 is a dim gray, and every source held to it was one: the Sun's glare
+        // a flat gray star, no smaller than before (user, 2026-10-08). So what is held to white,
+        // or has to clear the dark, is held to white as the screen has it now.
+        float rsWhiteScale()
+        {
+            return {{WhiteScaleGlsl}};
+        }
+        // What our own sources are held to: rsBloomSeen at the default exposure, and white with
+        // the same margin at any other. Below the default that is more than the blooms may see;
+        // a star's core is too small to feed them, and the Sun's is kept from them (BloomSun).
+        float rsBloomWhite = rsBloomSeen * rsWhiteScale();
         // Largest glow a point source may draw, in pixels of radius. The radius grows as the
         // fourth root of flux, which behaves across a real sky - Sirius is 18 px, Venus at its
         // best 40 - but a planet seen from a few million kilometres reaches magnitude -10 and
@@ -622,14 +1299,51 @@ internal static class StarShaders
             return mag < rsGlareKnee ? rsGlareKnee + (mag - rsGlareKnee) * rsGlareSlope : mag;
         }
 
-        // Byte back to flux, through the distance the observer actually is from the star.
-        // Pogson: five magnitudes is a factor of a hundred, and an absolute magnitude is what
-        // a star would show at ten parsecs.
-        float rsFlux(float packedScale, float distancePc)
+        // The catalogue's byte back to an absolute magnitude.
+        float rsAbsMag(float packedScale)
         {
-            float absMag = rsMagFaint - (packedScale * 255.0 - 1.0) / rsBytesPerMag;
+            return rsMagFaint - (packedScale * 255.0 - 1.0) / rsBytesPerMag;
+        }
+
+        // Absolute magnitude to flux, through the distance the observer actually is from the
+        // star. Pogson: five magnitudes is a factor of a hundred, and an absolute magnitude is
+        // what a star would show at ten parsecs.
+        float rsFlux(float absMag, float distancePc)
+        {
             float mag = absMag + 5.0 * log(distancePc / 10.0) * 0.4342944819;
             return pow(10.0, -0.4 * (rsCompressMagnitude(mag) - rsMagRef));
+        }
+
+        // The star lighting the scene, which since KSA 2026.10 need not be the Sun: the radius of
+        // its disc in pixels and its absolute magnitude, as SunGlow writes them, two halves of the
+        // lighting block's last spare int. The int is zero until it is written, and then the
+        // Sun's magnitude stands in.
+        vec2 rsLightWord()
+        {
+            return unpackHalf2x16(uint(global.lighting.lpPad4));
+        }
+
+        // The lighting star's disc on the screen, in pixels of radius: where a sight line grazes
+        // its sphere, through this view's own projection. That is the size the engine draws the
+        // star's sphere, which the sprite hands over to, and the two have to agree: the sprite
+        // stays burnt out until the last of its fade, so whatever of it stood outside the sphere
+        // went in one step, and the star looked a size smaller (user, 2026-10-07). The word's own
+        // figure is the engine's, an angle times the frame's height over its field of view, which
+        // is 10% over the projected size in a 60 degree view and 27% in a 90 degree one, and it
+        // is the width over the distance, short of the grazing line close to. It still says
+        // whether a lighting star is known.
+        float rsLightDiscPx()
+        {
+            if (rsLightWord().x <= 0.0) return 0.0;
+            float size = global.lighting.sunRadius;
+            float away = length(global.lighting.sunPosition.xyz);
+            float focal = 0.5 * abs(global.camera.projection[1][1]) * global.camera.screenHeight;
+            return focal * size / sqrt(max(away * away - size * size, 1e-6 * size * size));
+        }
+
+        float rsLightAbsMag()
+        {
+            return global.lighting.lpPad4 != 0 ? rsLightWord().y : rsSunAbsMag;
         }
 
         // ---- scintillation ----
@@ -777,8 +1491,32 @@ internal static class StarShaders
         // de Vries-Rose end of adaptation that is peak^0.5. Set between the two, by eye.
         const float rsGlareScatter = 0.008;    // the level for a peak of 1
         const float rsGlareKappa = 0.62;
-        const float rsGlareFloor = 0.004;      // what the glow must clear to be seen
-        const float rsGlareCeiling = 0.25;     // the most the glow adds, however bright
+        // What the glow must clear to be seen: a display level at the default exposure, and at
+        // the game's (rsWhiteScale), so a glare draws in as the exposure comes down.
+        float rsGlareFloor = 0.004 * rsWhiteScale();
+        // There is no ceiling on the glow itself. It had one, a quarter of white, so the glare
+        // never burnt out: a gray shelf round the Sun, where an eye looking at the Sun sees white.
+        // Close to a bright source the glare now runs past white, and the whole of it is held at
+        // what the engine's blooms may see (rsBloomWhite), where rsGlare ends.
+        //
+        // The lobes. What burns out is not round. glare_sim.py's needles are one width across,
+        // about an arcminute, at every radius, so near the source there are a few dozen round the
+        // circle where further out there are a thousand; the lanes below are a thousand at every
+        // radius, lie seven to a pixel close in, and average out to an even glow there. So the glow
+        // is first cut into lobes: rsLobeCount round the source, each split in two again and
+        // again, a level joining in over the octave of radius below where its lobes are
+        // rsLobeWidthPx wide and giving way beyond it as the next takes over, so a lobe is a
+        // streak a few times its own radius long. A lobe's strength is speckle, exponential, and
+        // multiplies what it sits in. The lobes show in step with the glow (rsLobeNear): where the
+        // glare burns out its outline is uneven, and far out, where the lanes part into needles of
+        // their own, nothing is changed. Lifting the ceiling alone gave a larger round disc. Count,
+        // depth and strength by eye, from offline sheets (user, 2026-10-06: the subtlest of three).
+        const int rsLobeCount = 12;            // lobes round the source at the coarsest level
+        const int rsLobeLevels = 6;            // each level has twice the lobes of the last
+        const float rsLobeWidthPx = 1.2;       // a level joins in where its lobes are this wide
+        const float rsLobeAlong = 1.5;         // a lobe's cells along the radius, to the octave
+        const float rsLobeAmp = 0.35;          // how far a lobe moves the glow
+        float rsLobeNear = 0.3 * rsWhiteScale();   // the glow at which the lobes are half shown: a fifth of white
         // The veil: the eye's other glare. The needles are the diffraction part of its point
         // spread function; light is also scattered in the cornea, the lens and off the back of
         // the eye, smoothly and with little colour, and that veiling glare is what reads as a
@@ -790,10 +1528,31 @@ internal static class StarShaders
         const float rsVeilShare = 0.5;
         const float rsVeilFall = 2.2;
         const float rsVeilCorePx = 1.5;
+        // It sinks out of sight; it does not end. It was cut off at the needles' floor, which is
+        // eight display levels near black, not one, so the veil fell in a straight line from
+        // twenty levels to none and stopped: a soft disc with an edge, 110 pixels out round the
+        // Sun at Saturn (user, 2026-10-08: "fall off smoother towards the edges"). The floor now
+        // bends it instead, v = g^2 / (g + floor): what it was well above the floor, and below it
+        // falling twice as fast as the glow, with no end until it is under one display level
+        // (rsVeilSeen of the floor, where the glow is rsVeilEnds of it). So it reaches further
+        // than the needles, faintly, and has its own furthest reach, drawn in over the last of it.
+        const float rsVeilSeen = 0.125;
+        const float rsVeilEnds = 0.4215;       // (seen + sqrt(seen^2 + 4 seen)) / 2
+        const float rsVeilMaxPx = 320.0;
         // A glare shorter than this lies under its own source's core, so it is not drawn, and
         // fades in over the next as much again: it is the bright stars' twinkle that crosses it.
         const float rsGlareMinPx = 3.0;
-        const float rsMaxRayPx = 180.0;        // the Sun alone comes near this
+        // The furthest a glare reaches past its source's edge; the Sun alone comes near it. It
+        // was the furthest from the source's CENTRE, which a point's edge is. But a star's disc
+        // grows as you close on it, and once it was 177 pixels in radius there was no room left
+        // under the cap: the glare, and the burnt-out margin that makes the star look its
+        // brightness, were squeezed out over the last tenth of the approach and then gone, leaving
+        // a bare sphere that looked a size smaller (user, 2026-10-07).
+        const float rsMaxRayPx = 180.0;
+        // At this level and over, a pixel inside the source's own edge is burnt out whatever the
+        // lanes and lobes say, and is not sent round them: a star close enough to fill the frame
+        // would visit them for every pixel of it. Against white, as the ceiling it clears is.
+        float rsGlareSureLevel = 100.0 * rsWhiteScale();
         // How sharply a star's or planet's glare leaves when its source leaves the frame: over
         // about the width of its core, since a point's light is in the frame or it is not, and
         // a glare left behind it streams in from nowhere. The Sun's is measured over its disc
@@ -828,35 +1587,17 @@ internal static class StarShaders
         // 0.47 R; this is set below both, by eye, because the full amount washed the needles out
         // more than an eye seems to.
         const float rsDiscSpread = 0.35;
+        // And no more than this, in pixels: what the Sun's own disc does to its needles from the
+        // Earth. Left to grow with the disc, the blur was a third of a close star's radius and
+        // more, while its glare reaches no further from the limb than a far one's: the needles
+        // went, the lobes ran together, and a star seen from close by was a blob (user,
+        // 2026-10-08: "it gets relatively stronger the closer you get to the source").
+        const float rsDiscSpreadMaxPx = 2.0;
         //
         // The paper's glare moves in time, with the pupil and the particles in the eye. Both
         // were tried and both are left out: the pattern holds still.
 
-        // The game's own lens flare setting, carried into these shaders - which cannot see the
-        // flare buffer - through the camera UBO's spare word, as its low half. Starburst.cs
-        // writes it: the toggle and the intensity together, and zero when either of them says no.
-        // The high half is flags, the same bits Starburst.cs names.
-        vec2 rsCameraWord()
-        {
-            return unpackHalf2x16(uint(global.camera.pad0));
-        }
-
-        float rsBurstStrength()
-        {
-            return max(rsCameraWord().x, 0.0);
-        }
-
-        // Whether this view draws the engine's Sun sphere: only the main one does.
-        bool rsSphereHere()
-        {
-            return (int(rsCameraWord().y) & 1) != 0;
-        }
-
-        // Whether the stars are switched off in the settings - see StarsOff.cs.
-        bool rsStarsHidden()
-        {
-            return (int(rsCameraWord().y) & 2) != 0;
-        }
+        {{EyeColour.Glsl}}
 
         // How far the engine's Sun sphere has faded in, as Sun.frag fades it: none at 88 solar
         // radii, whole by 44. Our sprite of the Sun gives way to it by as much, so only one of
@@ -880,25 +1621,25 @@ internal static class StarShaders
 
         // How far the needles reach: where a strong lane, three times the mean, sinks to the
         // floor, in the reddest band, which reads the pattern furthest out. From the limb, and
-        // capped from the centre. Zero means none.
+        // capped from it (rsMaxRayPx). Zero means none.
         float rsNeedleReachPx(float level, float discPx)
         {
             float excess = 3.0 * level / rsGlareFloor;
             if (excess <= 1.0) return 0.0;
             float limb = rsGlareCorePx * sqrt(pow(excess, 2.0 / rsGlareFall) - 1.0)
                        / rsBands[rsBandCount - 1].w;
-            float reach = min(discPx + limb, rsMaxRayPx);
+            float reach = discPx + min(limb, rsMaxRayPx);
             return reach - discPx < rsGlareMinPx ? 0.0 : reach;
         }
 
-        // How far the veil reaches: where its share of the glow sinks to the floor. Past the
-        // needles, for the Sun: slower to fall is what makes it a corona.
+        // How far the veil reaches: where it sinks under a display level (rsVeilSeen). Past the
+        // needles: slower to fall is what makes it a corona.
         float rsVeilReachPx(float level, float discPx)
         {
-            float excess = rsVeilShare * level / rsGlareFloor;
+            float excess = rsVeilShare * level / (rsVeilEnds * rsGlareFloor);
             if (excess <= 1.0) return 0.0;
             float limb = rsVeilCorePx * sqrt(pow(excess, 2.0 / rsVeilFall) - 1.0);
-            float reach = min(discPx + limb, rsMaxRayPx);
+            float reach = discPx + min(limb, rsVeilMaxPx);
             return reach - discPx < rsGlareMinPx ? 0.0 : reach;
         }
 
@@ -924,56 +1665,113 @@ internal static class StarShaders
             return sign(x) * (1.0 - y * exp(-x * x));
         }
 
+        // One cell of one level of the lobes: its strength, exponential, mean 1.
+        float rsLobeCell(float lobe, float along, float level)
+        {
+            return -log(max(1.0 - rsHash(vec3(lobe, along + 31.0 * level, 91.0)), 1e-6));
+        }
+
+        // The lobes' strength in a direction, at a radius in pixels, for lobes widthPx wide where
+        // they join in: mean 1, with detail down to that width at this radius. See rsLobeCount.
+        float rsLobes(float theta, float radius, float widthPx)
+        {
+            float strength = 1.0;
+            float logR = log2(max(radius, 1e-3));
+            for (int o = 0; o < rsLobeLevels; o++)
+            {
+                float count = float(rsLobeCount << o);
+                float home = count * widthPx / 6.28318531;      // where this level's lobes are widthPx wide
+                float t = clamp(logR - log2(home) + 1.0, 0.0, 1.0);
+                if (t <= 0.0) break;                            // and every finer level joins in further out
+                t = t * t * (3.0 - 2.0 * t) * home / max(radius, home);
+                float u = theta / 6.28318531 * count;
+                float lobe = mod(floor(u), count);
+                float next = mod(lobe + 1.0, count);
+                float f = fract(u);
+                f = f * f * (3.0 - 2.0 * f);
+                float v = logR * rsLobeAlong + 7.3 * float(o);
+                float cell = floor(v);
+                float g = v - cell;
+                g = g * g * (3.0 - 2.0 * g);
+                float n = mix(mix(rsLobeCell(lobe, cell, float(o)), rsLobeCell(next, cell, float(o)), f),
+                              mix(rsLobeCell(lobe, cell + 1.0, float(o)), rsLobeCell(next, cell + 1.0, float(o)), f),
+                              g);
+                strength *= 1.0 + rsLobeAmp * t * (n - 1.0);
+            }
+            return max(strength, 0.0);
+        }
+
         // The glare at an offset from the source, in screen pixels, for a source whose own disc
         // is discPx in radius (0 for a point), at the level rsGlareLevel gave and the reach
-        // rsGlareReachPx made of it.
-        vec3 rsGlare(vec2 offsetPx, float reachPx, float discPx, float level)
+        // rsGlareReachPx made of it. Not yet held to white: see rsGlare.
+        //
+        // fromLimb is how far the pixel is from the source's edge, in pixels: where the glow
+        // starts, and what it falls with. For a round source that is the offset less the disc's
+        // radius, and rsGlare passes it so. The Sun's burst passes its own when what is left of
+        // the Sun is not round (rsSunBurst): the distance from the outline of the part still in
+        // view. The needles and the lobes turn about the offset's origin either way, so it is one
+        // glare whatever the shape, and it ends as far from the edge as a round source's would.
+        vec3 rsGlareOf(vec2 offsetPx, float reachPx, float discPx, float level, float fromLimb)
         {
             // Nudged off its exact origin, which has no direction: left at zero, that pixel went
             // dark, which only showed once the origin could lie over a hull rather than the Sun.
             if (dot(offsetPx, offsetPx) < 1e-6) offsetPx = vec2(1e-3, 0.0);
             float r = length(offsetPx);
-            if (reachPx <= 0.0 || level <= 0.0 || r >= reachPx) return vec3(0.0);
-            float fromLimb = max(r - discPx, 0.0);
+            // From the centre, as the reach is measured: the edge's distance, and the pixel's past it.
+            float outPx = fromLimb + discPx;
+            if (reachPx <= 0.0 || level <= 0.0 || outPx >= reachPx) return vec3(0.0);
+            // Inside a bright source's own edge: burnt out, at the glow's own level there, which is
+            // past what any caller holds it to in any colour.
+            if (fromLimb <= 0.0 && level >= rsGlareSureLevel) return vec3(level);
 
-            // The veil, smooth and colourless, from the limb as the rest is. Taken to nothing over
-            // the last fifth of its own reach, as the needles are over theirs.
+            const float tau = 6.28318531;
+            float theta = atan(offsetPx.y, offsetPx.x);
+            if (theta < 0.0) theta += tau;
+            // A resolved source blurs its lobes as it blurs its needles, up to rsDiscSpreadMaxPx.
+            float spread = min(rsDiscSpread * discPx, rsDiscSpreadMaxPx);
+            float lobeWidth = sqrt(rsLobeWidthPx * rsLobeWidthPx + spread * spread);
+
+            // The veil, smooth and colourless, from the limb as the rest is. It sinks under what
+            // shows by itself (rsVeilSeen); only where its furthest reach cuts it short is it
+            // drawn in, over the last three tenths of its reach past the limb. It is cut into the
+            // same lobes, or it would lay a round disc of white over the needles' uneven one: by
+            // the needles' glow, which its own is half of at the limb.
             vec3 veil = vec3(0.0);
             float veilReach = min(rsVeilReachPx(level, discPx), reachPx);
-            if (r < veilReach)
+            if (outPx < veilReach)
             {
                 float x = fromLimb / rsVeilCorePx;
                 float g = rsVeilShare * level * pow(1.0 + x * x, -0.5 * rsVeilFall);
-                float v = max(rsGlareCeiling * (1.0 - exp(-g / rsGlareCeiling)) - rsGlareFloor, 0.0);
-                veil = vec3(v * clamp((veilReach - r) / (0.2 * veilReach), 0.0, 1.0)
+                float shown = 2.0 * g / (2.0 * g + rsLobeNear);
+                if (shown > 0.01) g *= 1.0 + shown * (rsLobes(theta, r, lobeWidth) - 1.0);
+                float v = max(g * g / (g + rsGlareFloor) - rsVeilSeen * rsGlareFloor, 0.0);
+                veil = vec3(v * (1.0 - smoothstep(0.7, 1.0, fromLimb / max(veilReach - discPx, 1e-3)))
                               * smoothstep(rsGlareMinPx, 2.0 * rsGlareMinPx, veilReach - discPx));
             }
 
             // Past the needles only the veil is left, and the lanes need not be visited at all.
             float needleReach = min(rsNeedleReachPx(level, discPx), reachPx);
-            if (r >= needleReach) return veil;
+            if (outPx >= needleReach) return veil;
             float sharp = rsNeedleWidthPx;
-            float spread = rsDiscSpread * discPx;
             float width = sqrt(sharp * sharp + spread * spread);
             // The skirt is a sharp needle's. Once the disc has blurred a needle wider there is
             // nothing left for it to add, and it would triple the lanes each pixel visits.
             float skirt = max(sharp * rsNeedleSkirtScale, width);
 
-            const float tau = 6.28318531;
             float spacing = tau / float(rsLaneCount);
-            float theta = atan(offsetPx.y, offsetPx.x);
-            if (theta < 0.0) theta += tau;
             int centre = int(floor(theta / spacing));
             int span = min(int(ceil(4.0 * skirt / (r * spacing))), rsLaneWindow);
 
-            // Each band's glow here, under the ceiling. A band reads the 575 nm glow at
-            // radius * 575/lambda, like everything else.
+            // Each band's glow here, cut into its lobes where it is bright. A band reads the
+            // 575 nm glow, and the lobes, at radius * 575/lambda, like everything else.
             float glow[rsBandCount];
             for (int b = 0; b < rsBandCount; b++)
             {
                 float x = fromLimb * rsBands[b].w / rsGlareCorePx;
                 float g = level * pow(1.0 + x * x, -0.5 * rsGlareFall);
-                glow[b] = rsGlareCeiling * (1.0 - exp(-g / rsGlareCeiling));
+                float shown = g / (g + rsLobeNear);
+                if (shown > 0.01) g *= 1.0 + shown * (rsLobes(theta, r * rsBands[b].w, lobeWidth) - 1.0);
+                glow[b] = g;
             }
 
             // One lane's share of the glow: the lanes' spacing here over a lane's area, so they
@@ -1012,9 +1810,18 @@ internal static class StarShaders
             }
             // Taken to nothing over the last fifth of their reach, where only the strongest lanes
             // are left, and faded in over the shortest glares.
-            float fade = clamp((needleReach - r) / (0.2 * needleReach), 0.0, 1.0)
+            float fade = clamp((needleReach - outPx) / (0.2 * max(needleReach - discPx, 1e-3)), 0.0, 1.0)
                        * smoothstep(rsGlareMinPx, 2.0 * rsGlareMinPx, needleReach - discPx);
             return max(total, vec3(0.0)) * share * fade + veil;
+        }
+
+        // The glare of a round source, held to what the engine's blooms may see. That is past
+        // white, so the glare burns out where it is bright enough, and the blooms add no second
+        // glare to it.
+        vec3 rsGlare(vec2 offsetPx, float reachPx, float discPx, float level)
+        {
+            return min(rsGlareOf(offsetPx, reachPx, discPx, level, max(length(offsetPx) - discPx, 0.0)),
+                       vec3(rsBloomWhite));
         }
 
         // ---- what is in the way ----
@@ -1089,12 +1896,26 @@ internal static class StarShaders
             return tau;
         }
 
+        //
+        // Every source carries the WHOLE air of its ray, however near it is. A source nearer than the
+        // body's centre used to be taken as in front of the air and left undimmed, to be undone and
+        // dimmed like any other pixel and so come out whole. Two things were wrong with that. A
+        // vessel coming out from behind the limb is past the limb's air and nearer than the centre
+        // both: from 400 km up the limb is 2,300 km away and the centre 6,800. And what is left of
+        // a source that keeps its light is the air the game DRAWS over the air assumed here, which
+        // only holds while the two agree: they are the Visual block's plain exponentials here, and
+        // whatever the game's shaders make of it there - with Real Atmospheres' measured densities
+        // 7 times less air over Venus's cloud tops, 10 times less through Titan's upper haze. So a
+        // distant vessel flared as it rose out of a limb (user, 2026-10-06). Carrying its ray's air,
+        // a source is undone by that same air and is left with the game's dimming, once, whatever
+        // the game draws: a vessel in front of a limb's air is dimmed with what is behind it, as
+        // the game without this mod does it, and nothing can come out brighter than it is.
         float rsAirVisibility(vec3 dirToSource, float sourceDistM)
         {
             if (!rsHasAir()) return 1.0;                           // no air, or none worth it
             vec3 centre = global.lighting.planetPosition.xyz;
             float d = length(centre);
-            if (d < 1.0 || d >= sourceDistM * 0.9999) return 1.0;
+            if (d < 1.0) return 1.0;
             float planet = global.lighting.planetRadius;
             float mu = -dot(centre / d, dirToSource);              // up is away from the centre
             return exp(-rsAirDepth(planet, max(d - planet, 0.0), mu));
@@ -1193,6 +2014,16 @@ internal static class StarShaders
             if (!rsHasAir()) return 1.0;
             return 1.0 / max(rsAirVisibility(rsPixelDirection(pixel), 1e30), 1.0 / 32.0);
         }
+
+        // The same for the source itself, worked out once in the vertex shader. A pixel is never
+        // undone by more than its source is: where the air assumed here is thicker than the air the
+        // game draws, a halo or a ray lying over the limb would otherwise be multiplied up past the
+        // dimming it gets. Lying over thicker air than its source it now dims a little there instead.
+        float rsAirUndoOf(vec3 dirToSource)
+        {
+            if (!rsHasAir()) return 1.0;
+            return 1.0 / max(rsAirVisibility(dirToSource, 1e30), 1.0 / 32.0);
+        }
         """;
 
     public const string Vert = $$"""
@@ -1215,9 +2046,23 @@ internal static class StarShaders
         layout (location = 2) out vec4 outStar;
         // The glare's level at the source: see rsGlareLevel.
         layout (location = 3) out float outGlareLevel;
+        // How far the source's own air is undone, the most any of its pixels may be: see rsAirUndoOf.
+        layout (location = 4) out flat float outSourceUndo;
 
         {{Tuning}}
         const float rsMinGlowPx = 1.5;            // a faint star must still cover a pixel
+
+        // The game's own stars other than the lighting one carry their place relative to it, in
+        // parsecs times a power of two (GameStars.cs): any coordinate past 2^40 is one of them,
+        // since the catalogue's largest is 20 kpc. They are kept in two halves, each at its own
+        // scale and told apart at 2^83, and a frame draws the half its camera block names
+        // (rsGameStarsSecond). The other half is about another lighting star, a frame before this
+        // one or after it: the buffer is shared by every frame still being drawn, and is rewritten
+        // when the lighting star changes.
+        const float rsGameStarMark = 1.099511627776e12;
+        const float rsGameStarSplit = 9.671406556917033e24;
+        const int rsGameStarScale = -72;
+        const int rsGameStarScaleSecond = -116;
 
         vec2 uv[] =
         {
@@ -1235,15 +2080,31 @@ internal static class StarShaders
 
         void main()
         {
-            // With the stars switched off in the settings the engine skips this pass, and
-            // StarsOff draws it anyway so the Sun stays: every other star is left out, placed
-            // off the screen, where nothing of it is drawn.
-            if (rsStarsHidden() && dot(position, position) >= 1e-12)
+            vec4 packedData = unpackRGBA(packed);
+
+            // Three kinds of instance (GameStars.cs). The star lighting the scene sits at the
+            // origin. The game's other stars carry their place relative to it, scaled past
+            // anything in the catalogue. The rest is the catalogue, in parsecs from the Sun.
+            bool lighting = dot(position, position) < 1e-12;
+            vec3 extent = abs(position);
+            float furthest = max(extent.x, max(extent.y, extent.z));
+            bool gameStar = furthest > rsGameStarMark;
+            bool secondHalf = furthest > rsGameStarSplit;
+
+            // A magnitude byte of zero is a star not to draw: a catalogue star the game draws as
+            // one of its own, or room kept for one. And with the stars switched off in the
+            // settings the engine skips this pass, and StarsOff draws it anyway so the Sun stays;
+            // the game's own stars stay too, as the engine's dots for them did, and only the
+            // catalogue is left out, placed off the screen, where nothing of it is drawn.
+            // And a game star in the half that is not this frame's: see rsGameStarSplit.
+            if (packedData.w <= 0.0 || (rsStarsHidden() && !lighting && !gameStar)
+                || (gameStar && secondHalf != rsGameStarsSecond()))
             {
                 outColor = vec3(0.0);
                 outUv = vec2(0.5);
                 outStar = vec4(0.0);
                 outGlareLevel = 0.0;
+                outSourceUndo = 1.0;
                 gl_Position = vec4(2.0, 2.0, 0.5, 1.0);
                 return;
             }
@@ -1254,28 +2115,59 @@ internal static class StarShaders
             // peak, every coloured star was dimmed by its own colour - the Sun by 0.11 mag, blue
             // stars and red giants by 0.4 to 0.6. The colours are raw, as the light is; the eye's
             // adaptation to the light it is in is applied to the whole frame (Adaptation).
-            vec4 packedData = unpackRGBA(packed);
             outColor = packedData.xyz / max(dot(packedData.xyz, rsLuma), 1e-3);
+            // The lighting star in the colour of its light, as its sphere is (Sun.frag), from this
+            // frame's own lighting block. It is the same colour as its instance's, which is
+            // rewritten when the lighting star changes: a frame still being drawn would show the
+            // star it was lit by in the next one's colour.
+            if (lighting && global.lighting.lpPad4 != 0)
+            {
+                vec3 light = max(global.lighting.sunColor.rgb, vec3(0.0));
+                float lightLuma = dot(light, rsLuma);
+                if (lightLuma > 1e-6) outColor = light / lightLuma;
+            }
 
             // The instance carries the star's true position in parsecs rather than a direction,
             // so both where it appears and how bright it looks follow from where the observer
             // is. Move, and near stars slide against far ones: parallax, for free, from the
             // camera position the engine already publishes.
+            //
+            // Not for the game's own stars. A place in parsecs from the Sun keeps a float's 7
+            // digits, millions of kilometres at Alpha Centauri, and from a planet there its stars
+            // would wander by minutes of arc as the camera moved. The lighting star is where the
+            // engine's lighting block puts it, relative to the camera, which holds its precision
+            // anywhere, and the game's other stars are placed from it.
+            vec3 lightPc = global.lighting.sunPosition.xyz / rsParsecMetres;
             vec3 toStar = position - global.camera.cameraPosition.xyz / rsParsecMetres;
-            float distancePc = max(length(toStar), 1e-6);
-            vec3 starDir = toStar / distancePc;
+            if (lighting && dot(lightPc, lightPc) > 0.0)
+                toStar = lightPc;
+            else if (gameStar)
+                toStar = ldexp(position, ivec3(secondHalf ? rsGameStarScaleSecond : rsGameStarScale)) + lightPc;
+            // The direction is the direction at any distance, and the lighting star's distance is
+            // its distance. Both were floored at a millionth of a parsec, 0.2 AU, which is further
+            // than a red dwarf's planets are from it: inside that the star's direction came out
+            // shorter than a unit, so every angle taken from it below was wrong (a limb and its
+            // air were worked out for a star nearer the horizon than it was: from Proxima b, never
+            // more than 14 degrees from it), and the star grew no brighter. The Sun never showed
+            // it, because its sphere is whole inside 44 of its radii, which is that same 0.2 AU.
+            // The floor stays for the catalogue, where it only guards the log.
+            float away = length(toStar);
+            vec3 starDir = toStar / max(away, 1e-30);
+            float distancePc = max(away, lighting ? 1e-12 : 1e-6);
 
-            // The Sun is the one star sitting at the origin, and it is drawn here at every
-            // distance. There is no handover: the engine's own sprite is switched off entirely,
-            // because any threshold for swapping between them is a threshold in pixels, and a
-            // pixel is a different distance at every field of view. The sphere still renders
-            // while the Sun is resolved, with this glare around it.
-            float flux = rsFlux(packedData.w, distancePc);
+            // The star lighting the scene is drawn here at every distance. There is no handover:
+            // the engine's own sprite is switched off entirely, because any threshold for
+            // swapping between them is a threshold in pixels, and a pixel is a different distance
+            // at every field of view. The sphere still renders while the star is resolved, with
+            // this glare around it. Its magnitude comes with its disc, as the C# side has it;
+            // every other star's is in its byte.
+            float absMag = lighting && global.lighting.lpPad4 != 0 ? rsLightWord().y
+                                                                    : rsAbsMag(packedData.w);
+            float flux = rsFlux(absMag, distancePc);
 
-            // The Sun's own angular size, in pixels: it is a resolved disc, and both the
-            // profile below and the scintillation above need to know that.
-            float discPx = dot(position, position) < 1e-12
-                         ? max(intBitsToFloat(global.lighting.lpPad4), 0.0) : 0.0;
+            // The lighting star's own angular size, in pixels: it is a resolved disc, and both
+            // the profile below and the scintillation above need to know that.
+            float discPx = lighting ? rsLightDiscPx() : 0.0;
 
             // Twinkle. A star is unresolved, so it gets the full effect; the brightness and
             // the colour move together, which is why the size is computed from the flickered
@@ -1312,7 +2204,7 @@ internal static class StarShaders
             {
                 float fullPeak = flux * rsBrightness * (rsPsfBeta - 1.0)
                                / (rsPi * rsPsfCore * rsPsfCore);
-                float whitePx = rsPsfCore * sqrt(max(pow(max(fullPeak / {{MaxOutput}}, 1.0),
+                float whitePx = rsPsfCore * sqrt(max(pow(max(fullPeak / ({{MaxOutput}} * rsWhiteScale()), 1.0),
                                                          1.0 / rsPsfBeta) - 1.0, 0.0));
                 // The ring draws in to the limb as the sphere takes over - see Star.frag.
                 sunLooksRad = sunAngularRad * (discPx + whitePx * (1.0 - rsSphereShown())) / discPx;
@@ -1328,12 +2220,18 @@ internal static class StarShaders
                 seen *= 1.0 - clamp(unpackHalf2x16(uint(global.celestial.pad2)).x, 0.0, 1.0);
             flux *= seen;
 
+            // And what an eye makes of its colour at this brightness (EyeColour.cs): the colour of a faint star
+            // fades into the eye's white, blue first, as a person's sky is mostly white stars with a few bright
+            // orange ones. Its light is unchanged; only what of its colour the cones can see.
+            outColor = rsSeenColour(outColor, rsMagRef - 2.5 * log(max(flux, 1e-30)) * 0.4342944819);
+
             // Moffat beta = 2 at unit energy peaks at 1/(pi*core^2), so the profile crosses
             // one display level at this radius. Sizing the quad to it means the sprite is
-            // exactly the star's visible extent and never a disc with a hard edge.
+            // exactly the star's visible extent and never a disc with a hard edge. A display
+            // level at the game's exposure: see rsWhiteScale.
             float peak = flux * rsBrightness * (rsPsfBeta - 1.0) / (rsPi * rsPsfCore * rsPsfCore);
             float glowPx = clamp(
-                rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels, 1.0 / rsPsfBeta) - 1.0, 0.0)),
+                rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels / rsWhiteScale(), 1.0 / rsPsfBeta) - 1.0, 0.0)),
                 rsMinGlowPx, rsMaxGlowPx);
 
             // A resolved source is its disc convolved with the profile, so the halo starts at
@@ -1374,6 +2272,7 @@ internal static class StarShaders
             outUv = uv[gl_VertexIndex];
             outStar = vec4(flux, spritePx, discPx, burstPx);
             outGlareLevel = glareLevel;
+            outSourceUndo = rsAirUndoOf(starDir);
 
             // Pixels to clip units. The offset is added in clip space, so it is divided by w
             // downstream, and x spans the screen width over 2 NDC units; the aspect factor on
@@ -1396,6 +2295,7 @@ internal static class StarShaders
         layout (location = 1) in vec2 inUv;
         layout (location = 2) in vec4 inStar;     // flux, sprite px, disc px, glare reach px
         layout (location = 3) in float inGlareLevel; // the glare's level at the source
+        layout (location = 4) in flat float inSourceUndo; // the most a pixel is undone by: its source's
 
         layout (location = 0) out vec4 outColor;
 
@@ -1437,10 +2337,10 @@ internal static class StarShaders
             bool sun = inStar.z > 0.0;
             float cap = sun ? {{SunLevelGlsl}} : rsBloomWhite;
 
-            // The glare goes beside the core rather than into it: it has its own ceiling, and
-            // running it through one meant for a saturating point would only take the colour
-            // back out of it. How far it reaches was settled in the vertex shader, where the
-            // quad was sized to hold it.
+            // The glare goes beside the core rather than into it: it is held to white by itself
+            // (rsGlare), and where it is fainter than that it keeps its colour, which a ceiling
+            // meant for a saturating point would take back out of it. How far it reaches was
+            // settled in the vertex shader, where the quad was sized to hold it.
             vec3 burst = rsGlare((inUv - vec2(0.5f)) * 2.0f * inStar.y, inStar.w, 0.0, inGlareLevel)
                        * edgeFade;
 
@@ -1448,12 +2348,17 @@ internal static class StarShaders
             // undone - see rsAirUndo. Not the Sun's: its core sits at its ceiling whatever the
             // air, so the engine's is the only dimming it gets, which is what turns it orange as
             // it sets.
-            float undo = sun ? 1.0 : rsAirUndo(gl_FragCoord.xy);
+            float undo = sun ? 1.0 : min(rsAirUndo(gl_FragCoord.xy), inSourceUndo);
             // And as its ring draws in, the Sun's sprite hands its light to the sphere over the
             // same distances, so nothing of it is left under the sphere to show through the
             // sphere's softened edge once its limb darkening shows: rsSphereShown.
             float giveWay = sun ? 1.0 - rsSphereShown() : 1.0;
-            outColor = vec4(inColor.rgb * (vec3(min(intensity, cap)) + burst) * undo * giveWay, 1.0f);
+            // A bright star's glare can burn out as its core does (rsGlare), so the two together
+            // are held to what the blooms may see, as the core alone was. Not the Sun's: its
+            // glare is the merge pass's, and its core has its own level.
+            vec3 light = vec3(min(intensity, cap)) + burst;
+            if (!sun) light = min(light, vec3(rsBloomWhite));
+            outColor = vec4(inColor.rgb * light * undo * giveWay, 1.0f);
         }
         """;
 
@@ -1498,6 +2403,7 @@ internal static class StarShaders
         layout (location = 4) out flat float outSpritePx;
         layout (location = 5) out flat float outBurstPx;
         layout (location = 6) out flat float outGlareLevel; // see rsGlareLevel
+        layout (location = 7) out flat float outSourceUndo; // see rsAirUndoOf
 
         {{Tuning}}
 
@@ -1534,6 +2440,7 @@ internal static class StarShaders
             float dist = length(instanceData.positionEgo);
             float seen = rsVisibility(instanceData.positionEgo / max(dist, 1.0f), dist, 0.0f);
             peak *= seen;
+            outSourceUndo = rsAirUndoOf(instanceData.positionEgo / max(dist, 1.0f));
             glowPx = rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels, 1.0f / rsPsfBeta) - 1.0f, 0.0f));
 
             // Venus and Jupiter clear the glare's floor, Neptune does not. The quad takes
@@ -1549,8 +2456,13 @@ internal static class StarShaders
             vec2 pastEdge = 0.5f * vec2(global.camera.screenWidth, global.camera.screenHeight)
                           * (abs(ndc) - vec2(1.0f));
 
-            // With its corners past the content, as the star shader's: see rsFanInradius.
-            float spritePx = max(glowPx, burstPx) / rsFanInradius;
+            // With its corners past the content, as the star shader's: see rsFanInradius. At a
+            // higher exposure than the default the halo shows further out than glowPx, which is
+            // its reach at the default and stays what carries the peak, so the quad grows to it
+            // as a star's does; it is never smaller than glowPx, which the fragment shader takes
+            // the quad to hold.
+            float shownPx = rsPsfCore * sqrt(max(pow(peak * rsDisplayLevels / rsWhiteScale(), 1.0f / rsPsfBeta) - 1.0f, 0.0f));
+            float spritePx = max(max(glowPx, min(shownPx, rsMaxGlowPx)), burstPx) / rsFanInradius;
             glareLevel *= 1.0f - smoothstep(-rsBurstEdgePx, rsBurstEdgePx,
                                             max(pastEdge.x, pastEdge.y));
             burstPx = rsGlareReachPx(glareLevel, 0.0f);
@@ -1592,6 +2504,7 @@ internal static class StarShaders
         layout (location = 4) in flat float inSpritePx;
         layout (location = 5) in flat float inBurstPx;
         layout (location = 6) in flat float inGlareLevel;
+        layout (location = 7) in flat float inSourceUndo;
 
         layout (location = 0) out vec4 outColor;
 
@@ -1628,12 +2541,14 @@ internal static class StarShaders
             float luma = dot(inColor, rsLuma);
             vec3 tint = luma > 1e-4f ? inColor / luma : vec3(1.0f);
 
-            // The core is clamped, to what the engine's blooms may see (rsBloomWhite); the rays
-            // are not - they are already faint, and a ceiling meant for a saturating point would
-            // only take the colour back out of them. The engine's dimming of this pixel by its
-            // air is undone, as for a star: see rsAirUndo.
+            // The core is clamped, to what the engine's blooms may see (rsBloomWhite), and so is
+            // the core with its glare: close to a bright source the glare burns out too (rsGlare),
+            // and the two together would be twice that. Further out the rays are faint and keep
+            // their colour. The engine's dimming of this pixel by its air is undone, as for a
+            // star, and by no more than the source's own: see rsAirUndo.
             float brightness = min(intensity, rsBloomWhite);
-            vec3 rgb = tint * (vec3(brightness) + burst) * rsAirUndo(gl_FragCoord.xy);
+            vec3 rgb = tint * min(vec3(brightness) + burst, vec3(rsBloomWhite))
+                     * min(rsAirUndo(gl_FragCoord.xy), inSourceUndo);
             // This pipeline blends by source alpha, and alpha follows the brightest channel, so
             // the core covers what is behind it. The colour is divided by that alpha, so a halo
             // or a ray ADDS its light, as a star's does. Written straight, the blend multiplied

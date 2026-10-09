@@ -133,7 +133,7 @@ internal static class Scintillation
     public static double Factor(double angularDiameterRad, double dirX, double dirY, double dirZ,
                                 int seed, double timeSeconds)
     {
-        if (LastSigmaZenith <= 0.0 || LastThetaC <= 0.0) return 1.0;
+        if (!Settings.Twinkle || LastSigmaZenith <= 0.0 || LastThetaC <= 0.0) return 1.0;
 
         double len = Math.Sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
         if (len <= 0.0) return 1.0;
@@ -211,6 +211,10 @@ internal static class Scintillation
             double sigma = 0.0, thetaC = 0.0;
             if (nearbyCelestial != null)
                 (sigma, thetaC) = Measure(nearbyCelestial, viewport);
+            // The player's switch: no twinkle is no air to twinkle through, for the star shader.
+            Settings.Load();
+            if (!Settings.Twinkle)
+                (sigma, thetaC) = (0.0, 0.0);
 
             // Static, and declared on Program itself rather than on a renderer.
             _lightingArray ??= AccessTools.Field(__instance.GetType(), "_lightingData");

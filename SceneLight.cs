@@ -15,11 +15,19 @@ namespace RealStars;
 /// Inside an atmosphere the daytime sky counts as the sunlight reaching the camera, the direct beam after its path
 /// through the air: what reddens a sunset or the light under Titan's haze. The sky's own tint, and the vessel's
 /// lamps and plumes, are not counted yet.
+///
+/// The star's light counts at its real strength where it lands. The game lights every body as the Sun lights the
+/// Earth, at any distance and from any star; an eye adapts to the light that is really there, and adapts less the
+/// dimmer it is (Adaptation's luminance factor). So the star's light on each surface, and at the camera, is scaled
+/// to the star's own brightness at that distance: Pluto's sunlight is a 1,500th of the Earth's, the daylight on
+/// Proxima b a 40th. Its colour is the game's.
 /// </summary>
 internal static class SceneLight
 {
     internal const int Columns = 24, Rows = 14;
     internal const double LuxPerUnit = 128000.0 / 9.0;    // the game's sunlight at 1 AU, 9, is the Sun's 128,000 lux
+    internal const double SunLux = 128000.0;              // the Sun's light at 1 AU
+    private const double MetresPerAu = 1.495978707e11;
     internal const double StarlightCandela = 2e-4;         // the dark sky's luminance, stars and Milky Way together
     internal const double VesselAlbedo = 0.5;
     internal static readonly double[] Starlight = { 1.0, 0.86, 0.72 };   // warm white, roughly a 5000 K blackbody
@@ -36,9 +44,21 @@ internal static class SceneLight
 
     /// <summary>The lights. Sun: the star's light at the camera, after any air (raw linear sRGB, the game's units);
     /// SunRaw: before it; SunEgo: where the star is; Planetshine: the irradiance from the nearby body at the camera.
-    /// Nearby: that body's index in the sphere list, or -1; InAir: the camera is inside its atmosphere.</summary>
+    /// Nearby: that body's index in the sphere list, or -1; InAir: the camera is inside its atmosphere.
+    /// StarFainter: how much fainter than the Sun the star is, in V magnitudes (GameStars.LightingFainter), which with
+    /// distance sets its real light; NaN takes the game's light as it is, at any distance.</summary>
     internal readonly record struct Lights(double[] Sun, double[] SunRaw, double[] SunEgo, double[] Planetshine,
-                                            int Nearby, bool InAir);
+                                            int Nearby, bool InAir, double StarFainter = double.NaN);
+
+    /// <summary>The star's real light over the game's, at this distance from it.</summary>
+    internal static double RealOverGame(Lights lights, double metres)
+    {
+        double gameLux = Luminance(lights.SunRaw) * LuxPerUnit;
+        if (double.IsNaN(lights.StarFainter) || !(gameLux > 0.0) || !(metres > 0.0))
+            return 1.0;
+        double au = metres / MetresPerAu;
+        return SunLux * Math.Pow(10.0, -0.4 * lights.StarFainter) / (au * au) / gameLux;
+    }
 
     /// <summary>The adapting light: its colour (linear sRGB at unit luminance), a white surface's luminance under
     /// it (cd/m2), and the share of the view's light that is the star's.</summary>
@@ -65,8 +85,10 @@ internal static class SceneLight
                 starSum += luminance;
         }
 
-        double sunLuma = Luminance(lights.Sun), sunCandela = sunLuma * LuxPerUnit / Math.PI;
-        double shineLuma = Luminance(lights.Planetshine), shineCandela = shineLuma * LuxPerUnit / Math.PI;
+        // At the camera, the star's light and the planetshine are as real as the star's distance makes them.
+        double atCamera = RealOverGame(lights, Norm(lights.SunEgo));
+        double sunLuma = Luminance(lights.Sun) * atCamera, sunCandela = sunLuma * LuxPerUnit / Math.PI;
+        double shineLuma = Luminance(lights.Planetshine) * atCamera, shineCandela = shineLuma * LuxPerUnit / Math.PI;
         double starCandelaUnits = StarlightCandela * Math.PI / LuxPerUnit;   // starlight's luminance, in the game's units
         double[] sunDir = Normalised(lights.SunEgo);
         double tanH = view.TanHalfV * view.Aspect;
@@ -114,7 +136,8 @@ internal static class SceneLight
             }
             double px = d[0] * t, py = d[1] * t, pz = d[2] * t;
             double nx = (px - s.X) / s.Radius, ny = (py - s.Y) / s.Radius, nz = (pz - s.Z) / s.Radius;
-            double[] toSun = Normalised(new[] { lights.SunEgo[0] - px, lights.SunEgo[1] - py, lights.SunEgo[2] - pz });
+            double[] fromHit = { lights.SunEgo[0] - px, lights.SunEgo[1] - py, lights.SunEgo[2] - pz };
+            double[] toSun = Normalised(fromHit);
             double mu = nx * toSun[0] + ny * toSun[1] + nz * toSun[2];
             if (mu <= 0.0)
             {
@@ -123,7 +146,7 @@ internal static class SceneLight
             }
             bool underAir = lights.InAir && hit == lights.Nearby;
             double[] light = underAir ? lights.Sun : lights.SunRaw;
-            double luma = Luminance(light);
+            double luma = Luminance(light) * RealOverGame(lights, Norm(fromHit));
             double law = s.Law?.Law(mu, -(d[0] * toSun[0] + d[1] * toSun[1] + d[2] * toSun[2])) ?? 1.0;
             Add(share * s.Albedo * mu * law * luma / Math.PI, light, luma * LuxPerUnit / Math.PI, true);
         }
@@ -341,7 +364,7 @@ internal static class SceneLight
         bool inAir = nearby >= 0 && _atmospheric != null && _atmospheric.IsInstanceOfType(nearbyBody) && air > 0.0
                      && Norm(new[] { spheres[nearby].X, spheres[nearby].Y, spheres[nearby].Z }) < spheres[nearby].Radius + air;
         return Evaluate(new View(forward, right, up, tanHalfV, aspect), spheres,
-                        new Lights(sun, sunRaw, sunEgo, planetshine, nearby, inAir));
+                        new Lights(sun, sunRaw, sunEgo, planetshine, nearby, inAir, GameStars.LightingFainter));
     }
 
     private static double[] Vec(object v)

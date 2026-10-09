@@ -36,6 +36,7 @@ internal static partial class BodyColours
         public readonly float Luminance;      // the game's colour's, kept: the sprite shader takes only the hue
         public bool Lit;
         public (float R, float G, float B)? Light;
+        public float[]? Shown;                // as last written, after the eye (EyeColour)
 
         public Entry(object reference, float[] hue, float luminance)
         {
@@ -110,7 +111,8 @@ internal static partial class BodyColours
         return new Entry(Activator.CreateInstance(_reference!)!, hue, y);
     }
 
-    /// <summary>What the distant sprites read in place of a template's ColorRgb: its colour, lit by the star.</summary>
+    /// <summary>What the distant sprites read in place of a template's ColorRgb: its colour, lit by the star, as an
+    /// eye sees it at the brightness the sprite was just given (EyeColour): a faint moon's colour fades to white.</summary>
     public static object? LitColour(object? template)
     {
         if (template == null)
@@ -121,14 +123,20 @@ internal static partial class BodyColours
         {
             Entry e = Entries.GetValue(template, NewEntry);
             var light = Adaptation.Light;
-            if (!e.Lit || !Nullable.Equals(e.Light, light))
+            float[] c = LitBy(e.Hue, e.Luminance, light);
+            if (ReferenceEquals(template, PlanetPhotometry.LastTemplate) && !double.IsNaN(PlanetPhotometry.LastMagnitude))
             {
-                float[] c = LitBy(e.Hue, e.Luminance, light);
+                (double eyeL, double eyeS) = Adaptation.EyeRatios;
+                c = EyeColour.Seen(c, PlanetPhotometry.LastMagnitude, eyeL, eyeS);
+            }
+            if (!e.Lit || e.Shown == null || !Same(e.Shown, c))
+            {
                 _r!.SetValue(e.Reference, c[0]);
                 _g!.SetValue(e.Reference, c[1]);
                 _b!.SetValue(e.Reference, c[2]);
                 _load!.Invoke(e.Reference, new object?[] { null });
                 e.Light = light;
+                e.Shown = c;
                 e.Lit = true;
             }
             return e.Reference;
@@ -140,6 +148,11 @@ internal static partial class BodyColours
             return _colour!.GetValue(template);
         }
     }
+
+    /// <summary>Whether two colours differ by less than shows: a part in a thousand.</summary>
+    private static bool Same(float[] a, float[] b) =>
+        Math.Abs(a[0] - b[0]) <= 1e-3f * Math.Max(Math.Abs(b[0]), 1e-3f) && Math.Abs(a[1] - b[1]) <= 1e-3f * Math.Max(Math.Abs(b[1]), 1e-3f)
+        && Math.Abs(a[2] - b[2]) <= 1e-3f * Math.Max(Math.Abs(b[2]), 1e-3f);
 
     /// <summary>Transpiler on StaticCelestialDistanceRendering.UpdateRenderData: the sprite's colour comes from
     /// LitColour instead of the template's ColorRgb. One read is expected there; otherwise nothing changes.</summary>

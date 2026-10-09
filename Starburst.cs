@@ -17,24 +17,35 @@ namespace RealStars;
 /// same number, so the slider moves the rays as well; zero for either means no burst at all,
 /// and with it no quad grown to hold one.
 ///
-/// The word is two halves: the strength, and flags. Whether this view draws the engine's Sun
-/// sphere, which only the main view does, so our sprite knows whether to give way to it; and
-/// whether the stars are switched off, so the star shader keeps only the Sun (see StarsOff).
-/// Both read as no when this has never run, the safe way round: the sprite stays, and the
-/// stars show.
+/// The word (EyeColour.CameraWord) carries the strength, two flags and the eye's white. The flags:
+/// whether this view draws the engine's Sun sphere, which only the main view does, so our sprite
+/// knows whether to give way to it; and whether the stars are switched off, so the star shader
+/// keeps only the Sun (see StarsOff). Both read as no when this has never run, the safe way
+/// round: the sprite stays, and the stars show. The eye's white is what a faint star's colour
+/// fades into (EyeColour).
 /// </summary>
 internal static class Starburst
 {
     /// <summary>Above this the slider is doing something other than taste, so it is capped.</summary>
-    private const float MaxStrength = 4.0f;
+    private const float MaxStrength = EyeColour.MaxStrength;
 
-    /// <summary>The flags in the word's high half. Star.vert and Star.frag read the same bits.</summary>
+    /// <summary>The flags in the word. Star.vert and Star.frag read the same bits.</summary>
     internal const int SphereHere = 1, StarsHidden = 2;
+
+    /// <summary>A third flag, for the star shader alone: the second half of the game stars' slots is this
+    /// frame's (GameStars.SecondSet).</summary>
+    internal const int SecondStars = 4;
+
+    /// <summary>True while the camera word is being written each frame: only then can a frame be told which half
+    /// of the game stars' slots is its own.</summary>
+    internal static bool WordLive => _resolved && _usable;
 
     private static FieldInfo? _cameraArray, _pad, _graphics, _lensFlare, _intensity, _stars;
     private static PropertyInfo? _viewType;
     private static PropertyInfo? _currentSettings;
-    private static FieldInfo? _lightingArray, _atmosphereHeight;
+    private static FieldInfo? _lightingArray, _atmosphereHeight, _sunPositionRadius;
+    private static FieldInfo? _bodyParent, _bodyArray, _bodyCount;
+    private static bool _bodiesBroken, _bodiesLogged;
     private static Type? _atmosphericBody;
     private static readonly Dictionary<Type, PropertyInfo?> _shaderSlots = new();
     private static readonly Dictionary<Type, MethodInfo?> _cameras = new();
@@ -79,17 +90,22 @@ internal static class Starburst
                 return;
             }
 
-            bool on = _lensFlare!.GetValue(graphics) is bool b && b;
+            // The game's setting and the mod's own switch (Settings.Glare): either one off is no glare.
+            Settings.Load();
+            bool on = _lensFlare!.GetValue(graphics) is bool b && b && Settings.Glare;
             float slider = _intensity!.GetValue(graphics) is float f && f > 0.0f ? f : 1.0f;
             float strength = on ? Math.Min(slider, MaxStrength) : 0.0f;
 
             // RenderGame draws the Sun sphere for the main view; the other views and the editor
             // draw none, and there our sprite is the Sun at every distance.
             bool main = _viewType?.GetValue(viewport)?.ToString() == "Main";
+            // Inside the sphere's own mesh the engine draws nothing of it, unless SunSphere got its
+            // pipeline to: there the sprite is the star again, as in a view with no sphere.
+            if (main && !SunSphere.DrawnFromInside && InsideSunMesh(program, slot)) main = false;
             bool starsOff = _stars?.GetValue(graphics) is bool shown && !shown;
-            int flags = (main ? SphereHere : 0) | (starsOff ? StarsHidden : 0);
-            int word = BitConverter.HalfToUInt16Bits((Half)strength)
-                     | (BitConverter.HalfToUInt16Bits((Half)flags) << 16);
+            int flags = (main ? SphereHere : 0) | (starsOff ? StarsHidden : 0) | (GameStars.SecondSet ? SecondStars : 0);
+            (double eyeL, double eyeS) = Adaptation.EyeRatios;
+            int word = EyeColour.CameraWord(strength, flags, eyeL, eyeS);
             _pad!.SetValue(cbox, word);
             cameras.SetValue(cbox, slot);
 
@@ -108,6 +124,72 @@ internal static class Starburst
             _usable = false;
             ShaderShadow.Log("WARN: the lens flare setting could not be read; no starbursts: " + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Makes global.celestial.bodies mean what it says.
+    ///
+    /// UpdateShaderData fills that list with the planet within a quarter of an AU of the camera and its moons,
+    /// each where it stands from the camera, and with no such planet it leaves the list as it was: the last
+    /// planet's, where it stood from the camera then. Jump from a low orbit to a star with no planets and the
+    /// planet comes along, as far below the camera as it was. Our shaders hide every source behind a body in the
+    /// list, so there was a black disc across the sky with no stars in it, and no star lighting the scene either
+    /// (user, 2026-10-08, at Alpha Centauri A, straight from a planet of Barnard's Star); and the engine's own
+    /// shaders take its shadow from it. With no system at all the engine empties the list. So does this, on the
+    /// frames the engine found no planet: the count alone, which is all any reader goes by.
+    /// </summary>
+    public static void ClearStaleBodies(object program, object viewport)
+    {
+        if (_bodiesBroken) return;
+        try
+        {
+            Type vt = viewport.GetType();
+            if (!_shaderSlots.TryGetValue(vt, out PropertyInfo? slotProp))
+                _shaderSlots[vt] = slotProp = AccessTools.Property(vt, "ShaderSlot");
+            if (slotProp?.GetValue(viewport) is not int slot || slot < 0) return;
+
+            _bodyParent ??= AccessTools.Field(program.GetType(), "_uboCelestialParent")
+                            ?? throw new MissingMemberException("Program._uboCelestialParent not found");
+            _bodyArray ??= AccessTools.Field(program.GetType(), "_celestialData")
+                           ?? throw new MissingMemberException("Program._celestialData not found");
+            if (_bodyParent.GetValue(program) != null) return;          // filled this frame: leave it be
+            if (_bodyArray.GetValue(null) is not Array bodies || slot >= bodies.Length) return;
+            object box = bodies.GetValue(slot)!;
+            _bodyCount ??= AccessTools.Field(box.GetType(), "BodyCount")
+                           ?? throw new MissingMemberException("UboCelestialData.BodyCount not found");
+            if (_bodyCount.GetValue(box) is not int count || count == 0) return;
+
+            _bodyCount.SetValue(box, 0);
+            bodies.SetValue(box, slot);
+            if (!_bodiesLogged)
+            {
+                ShaderShadow.Log("emptying the stale body list far from any planet (the engine leaves the last planet's behind)");
+                _bodiesLogged = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _bodiesBroken = true;
+            ShaderShadow.Log("WARN: the stale body list far from any planet is left as the engine has it: "
+                             + ex.GetBaseException().Message);
+        }
+    }
+
+    /// <summary>
+    /// Whether this view's camera is within the mesh the engine draws the star's sphere on: the
+    /// lighting block has the star's place from the camera and its radius.
+    /// </summary>
+    private static bool InsideSunMesh(object program, int slot)
+    {
+        _lightingArray ??= AccessTools.Field(program.GetType(), "_lightingData");
+        if (_lightingArray?.GetValue(null) is not Array lighting || slot >= lighting.Length) return false;
+        object box = lighting.GetValue(slot)!;
+        _sunPositionRadius ??= AccessTools.Field(box.GetType(), "SunPositionRadius");
+        if (_sunPositionRadius?.GetValue(box) is not object sun) return false;
+        Type f4 = sun.GetType();
+        double Part(string name) => f4.GetField(name)?.GetValue(sun) is float f ? f : double.NaN;
+        double x = Part("X"), y = Part("Y"), z = Part("Z"), radius = Part("W");
+        return radius > 0.0 && Math.Sqrt(x * x + y * y + z * z) < SunSphere.MeshRadii * radius;
     }
 
     /// <summary>

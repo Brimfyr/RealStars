@@ -108,6 +108,26 @@ internal static class VesselOcclusion
         }
     }
 
+    /// <summary>Whether any vessel is near enough to this camera to hide anything. None, and no ray need be cast.</summary>
+    public static bool Any(object camera)
+    {
+        if (_broken) return false;
+        lock (_lock)
+        {
+            try
+            {
+                Refresh(camera);
+                return _candidates.Count > 0;
+            }
+            catch (Exception ex)
+            {
+                _broken = true;
+                ShaderShadow.Log("WARN: vessels cannot hide a light source: " + ex.Message);
+                return false;
+            }
+        }
+    }
+
     /// <summary>Does anything with parts stand on this ray, in front of the camera and short of the source?</summary>
     private static bool Blocked((double X, double Y, double Z) dir, double sourceDistM)
     {

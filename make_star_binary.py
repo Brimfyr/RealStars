@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Build the star binary from AT-HYG and Hipparcos, in the format the game's own loader reads, with
-each star's space velocity after it so the mod can carry the sky to the game's date.
+"""Build the star binary from AT-HYG and Hipparcos, in the format the game's own loader reads.
 
 Sources:
   AT-HYG v3.2, magnitude-10 subset (astronexus, CC BY-SA 4.0): which stars, and their V, B-V,
       distance, proper motion and radial velocity. Tycho-2 merged with HYG, with Gaia DR3 distances
-      and motions for most stars.
+      and motions for most stars. The subset also carries every star of the Gliese catalogue of
+      nearby stars, however faint, which is where the neighbourhood below comes from.
   Hipparcos main catalogue (ESA 1997, CDS I/239): positions, for every star it has.
+
+Which stars: everything to V 9 as seen from here, and every star within 20 pc however faint. The
+first is the sky; the second is the neighbourhood, which interstellar flight sees from close by.
+Proxima Centauri is V 11 from here and V -17 from its own planets, and the game's own systems
+include it and Barnard's Star (V 9.5): with them in the catalogue, the mod draws the game's stars
+with their measured brightness and colour (GameStars.cs).
 
 Why positions come from Hipparcos: AT-HYG's are not all at one epoch. Checked against Hipparcos,
 80,453 of its Hipparcos stars are at J2000, but 2,652 are still at J1991.25 - Alpha Centauri,
@@ -30,24 +36,28 @@ So this writes its own, with four changes:
               across the whole range, and the shader decodes it back to a magnitude.
   colour      Hue only, so brightness lives in one place: stored with its brightest channel
               at 255 for the bytes' precision, and brought to unit luminance in Star.vert,
-              since a colour at its peak is dimmer than white by its own hue. Derived from B-V
-              through an effective temperature and a blackbody spectrum integrated against
-              the CIE 1931 observer, rather than the piecewise fit the game uses - which
-              reads the V-I column as though it were B-V, and returns black outside
-              -0.4..2.1, culling 158 naked-eye stars including Betelgeuse and Antares.
-              Raw, against the display's white, as a star's <Sunlight> is: the mod adapts
-              the picture to the light it is in (Adaptation.cs), stars and light alike.
+              since a colour at its peak is dimmer than white by its own hue. The colour of a
+              real spectrum of the star's kind at its B-V (star_colours.py: Pickles' empirical
+              library along the dwarf, giant or supergiant sequence, and a measured spectrum for
+              the Sun) through the CIE 1931 observer, rather than the piecewise fit the game
+              uses - which reads the V-I column as though it were B-V, and returns black outside
+              -0.4..2.1, culling 158 naked-eye stars including Betelgeuse and Antares - or a
+              blackbody, which no star's colour is: A stars look bluer than any blackbody of
+              their B-V, red dwarfs yellower. Raw, against the display's white, as a star's
+              <Sunlight> is: the mod adapts the picture to the light it is in (Adaptation.cs),
+              stars and light alike.
   frame       True J2000 ecliptic, Z-up, matching the shipped binary. The game's own
               `generatestarbinary` writes Y-up equatorial, so anything it produces is
               misoriented against the solar system.
-  date        Positions at the game's time zero, and each star's velocity after them, so the
-              mod can move the sky on as the game's clock runs. Kapteyn's star, the fastest
-              here, moves 8.6" a year: 5' between Hipparcos's epoch and the game's.
+  date        Positions at the game's time zero, each carried there along its own motion from
+              its catalogue's epoch. Barnard's Star, the fastest here, moves 10.4" a year: 6'
+              between Hipparcos's epoch and the game's. The sky stays at that date: the mod moved
+              it on with the game's clock until 2026-10, when that was taken out, since the
+              game's own stars stand still.
 
 Layout: int32 count, then per star float3 position (pc), byte absolute magnitude, byte R, G, B -
 the record ModLibrary.LoadStarBinaries reads, so the game's own reader still loads the file,
-flat. Then the motion block, which that reader never reaches: the tag "RSM1", float64 epoch of the
-positions (Julian year), then per star float3 velocity in parsecs per Julian year, same frame.
+flat.
 """
 import csv
 import gzip
@@ -77,6 +87,7 @@ MAG_ABS_FAINT = 16.5     # absolute magnitude stored as byte 1
 BYTES_PER_MAG = 10.0     # 0.1 mag per step, spanning -8.9 to +16.5
 MAG_ABS_BRIGHT = MAG_ABS_FAINT - 254.0 / BYTES_PER_MAG
 MAG_LIMIT = 9.0          # catalogue cut, on APPARENT magnitude as seen from here
+NEAR_PC = 20.0           # and every star closer than this, however faint
 
 # A star with no distance goes out here, far enough that it cannot parallax noticeably, with an
 # absolute magnitude chosen so that its apparent magnitude from the solar system comes out exactly
@@ -93,7 +104,6 @@ TYCHO_EPOCH = 2000.0
 
 MAS = math.pi / (180.0 * 3600.0 * 1000.0)   # milliarcseconds to radians
 KMS_TO_PC_PER_YR = 365.25 * 86400.0 / 3.0856775814913673e13
-MOTION_TAG = b"RSM1"
 
 
 def num(text, default=math.nan):
@@ -119,16 +129,18 @@ def hipparcos_positions():
 
 
 def parse():
-    """Every AT-HYG star to MAG_LIMIT but the Sun, with its position swapped for Hipparcos's where
-    Hipparcos has one."""
+    """Every AT-HYG star to MAG_LIMIT, and every one within NEAR_PC with a magnitude, but the Sun,
+    with its position swapped for Hipparcos's where Hipparcos has one."""
     hip = hipparcos_positions()
-    cols = {k: [] for k in ("v", "ra", "dec", "epoch", "dist", "bv", "pmra", "pmdec", "rv")}
-    from_hip = no_bv = no_dist = no_pm = no_rv = 0
+    cols = {k: [] for k in ("v", "ra", "dec", "epoch", "dist", "bv", "pmra", "pmdec", "rv", "hip", "spect")}
+    from_hip = no_bv = no_dist = no_pm = no_rv = near = 0
     with gzip.open(ATHYG, "rt", encoding="utf-8") as f:
         for r in csv.DictReader(f):
             v = num(r["mag"])
-            if not v <= MAG_LIMIT or r["id"] == "1":       # row 1 is the Sun, which goes in below
+            close = 0.0 < num(r["dist"], 0.0) <= NEAR_PC and not math.isnan(v)
+            if not (v <= MAG_LIMIT or close) or r["id"] == "1":   # row 1 is the Sun, which goes in below
                 continue
+            near += not v <= MAG_LIMIT
             h = int(r["hip"]) if r["hip"] else None
             if h in hip:
                 ra, dec = hip[h]
@@ -149,11 +161,11 @@ def parse():
             rv = num(r["rv"])
             if math.isnan(rv):
                 rv, no_rv = 0.0, no_rv + 1
-            for k, x in zip(cols, (v, ra, dec, epoch, dist, bv, pmra, pmdec, rv)):
+            for k, x in zip(cols, (v, ra, dec, epoch, dist, bv, pmra, pmdec, rv, h or 0, r["spect"] or "")):
                 cols[k].append(x)
     n = len(cols["v"])
-    print(f"{n} stars to V={MAG_LIMIT}: positions {from_hip} Hipparcos (J{HIP_EPOCH}), "
-          f"{n - from_hip} Tycho-2 (J{TYCHO_EPOCH:.0f})")
+    print(f"{n} stars: {n - near} to V={MAG_LIMIT}, {near} fainter within {NEAR_PC:.0f} pc; "
+          f"positions {from_hip} Hipparcos (J{HIP_EPOCH}), {n - from_hip} AT-HYG (J{TYCHO_EPOCH:.0f})")
     print(f"  defaulted: {no_bv} B-V to {BV_DEFAULT}, {no_pm} proper motions and {no_rv} radial "
           f"velocities to zero; {no_dist} with no distance")
     return {k: np.array(x) for k, x in cols.items()}
@@ -174,14 +186,18 @@ def distances(dist, vmag):
     how far away it is. Three supergiants with poor Gaia parallaxes come out brighter than the
     byte reaches; they are brought in until they fit, which keeps their magnitude from here
     exact at the cost of a distance that was already doubtful.
+
+    A few of the nearby dwarfs are fainter than the byte reaches (GJ 3849 is M_V 19.5). They keep
+    their place, which is the reason they are here, and show at the byte's faintest: GJ 3849, at
+    11 pc, is V 16.7 from here instead of V 19.7, which nobody will see either way.
     """
     known = ~np.isnan(dist)
     dist = np.where(known, dist, UNKNOWN_DISTANCE_PC)
     absmag = vmag - 5.0 * np.log10(dist / 10.0)
     fits = np.clip(absmag, MAG_ABS_BRIGHT, MAG_ABS_FAINT)
-    moved = int((fits != absmag).sum())
-    dist = 10.0 * 10.0 ** ((vmag - fits) / 5.0)
-    return dist, fits, known, moved
+    moved = absmag < MAG_ABS_BRIGHT
+    dist = np.where(moved, 10.0 * 10.0 ** ((vmag - fits) / 5.0), dist)
+    return dist, fits, known, int(moved.sum()), int((absmag > MAG_ABS_FAINT).sum())
 
 
 def motion(ra_deg, dec_deg, dist, pmra, pmdec, rv):
@@ -238,25 +254,58 @@ def blackbody_srgb(T):
     return np.clip(xyz @ M.T, 0.0, None)
 
 
-def colours(bv):
-    """B-V to linear sRGB, raw: against the display's D65 white, the colour a star's temperature
-    gives anywhere, and the convention for a star's <Sunlight> too. Peak-normalised so the byte
-    carries hue and nothing else. The mod adapts the whole picture to the light the eye is in, and
-    only partly (Zhu et al. 2026; Adaptation.cs), so the Sun reads nearly white and a red dwarf warm."""
-    T = np.clip(teff_from_bv(np.clip(bv, -0.4, 2.5)), 1500.0, 40000.0)
-    rgb = blackbody_srgb(T)
-    return rgb / np.maximum(rgb.max(1, keepdims=True), 1e-9), T
-
-
 # -------------------------------------------------------------------------------- write
 SUN_ABS_MAG = 4.83       # the Sun's V absolute magnitude
-SUN_BV = 0.65            # its B-V, which puts it at 5772 K through the same colour pipeline
+SUN_BV = 0.65            # its B-V (Ramirez et al. 2012: 0.653)
+
+# The stock interstellar stars (Core's InterstellarAstronomicals.xml) by Id: the Hipparcos star each is, and the
+# light the game gives it. Their lights are paler than the stars, and Real Stars reads each as its star's colour
+# in the catalogue, at the brightness the game gave it (SunLight.cs), as it reads the stock Sol's white.
+STOCK_STARS = {
+    "AlphaCentauriA": (71683, (9.2, 9.1, 8.7)),
+    "AlphaCentauriB": (71681, (9.2, 8.4, 7.0)),
+    "ProximaCentauri": (70890, (9.0, 5.8, 3.4)),
+    "BarnardsStar": (87937, (9.0, 6.4, 3.8)),
+    "TauCeti": (8102, (9.0, 8.3, 7.6)),
+}
+SUNLIGHT_OUT = os.path.join(HERE, "SunLight.Generated.cs")
+
+
+def write_sunlight(sun_rgb, stock):
+    """The Sun's raw colour and the stock stars' colours, for SunLight.cs."""
+    def f3(c):
+        return ", ".join(f"{v:.5f}f" for v in c)
+    lines = ["// Generated by make_star_binary.py: do not edit.",
+             "namespace RealStars;",
+             "",
+             "internal static partial class SunLight",
+             "{",
+             "    /// <summary>The Sun's raw colour: a measured solar spectrum (CALSPEC sun_reference_stis_002) against the",
+             "    /// display's D65 white, brightest channel 1, as star_colours.py gives every star. The catalogue stores it",
+             f"    /// as ({', '.join(str(int(round(v * 255))) for v in sun_rgb)}).</summary>",
+             f"    internal static readonly float[] SunRaw = {{ {f3(sun_rgb)} }};",
+             "",
+             "    /// <summary>The stock interstellar stars by Id: the light the game gives each, and the raw colour of the",
+             "    /// star in the catalogue (its measured B-V on the dwarf sequence of real spectra).</summary>",
+             "    private static readonly Dictionary<string, (float R, float G, float B, float[] Raw, string Source)> StockStars = new()",
+             "    {"]
+    for sid, (light, rgb, bv, hip) in stock.items():
+        lines.append(f'        ["{sid}"] = ({light[0]}f, {light[1]}f, {light[2]}f, new[] {{ {f3(rgb)} }}, '
+                     f'"HIP {hip}, B-V {bv:.3f}"),')
+    lines += ["    };", "}", ""]
+    with open(SUNLIGHT_OUT, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines))
+    print(f"wrote {SUNLIGHT_OUT}")
 
 
 def main():
+    import star_colours
     s = parse()
     vmag, bv = s["v"], s["bv"]
-    dist, absmag, known, moved = distances(s["dist"], vmag)
+    dist, absmag, known, moved, clipped = distances(s["dist"], vmag)
+    kinds = star_colours.classify(s["spect"], bv, absmag, known)
+    rgb = star_colours.colours(bv, kinds)
+    sun_rgb = star_colours.sun()
     dirs, vel = motion(s["ra"], s["dec"], dist, s["pmra"], s["pmdec"], s["rv"])
 
     # Straight-line motion from each position's own epoch to the game's: exact for the linear
@@ -277,8 +326,7 @@ def main():
     vmag = np.append(vmag, -26.74)
     bv = np.append(bv, SUN_BV)
     known = np.append(known, True)
-
-    rgb, T = colours(bv)
+    rgb = np.vstack([rgb, sun_rgb])
 
     scale = np.clip(np.round((MAG_ABS_FAINT - absmag) * BYTES_PER_MAG) + 1, 1, 255).astype(np.uint8)
     rgb8 = np.clip(np.round(rgb * 255.0), 0, 255).astype(np.uint8)
@@ -293,19 +341,33 @@ def main():
         rec["s"] = scale
         rec["r"], rec["g"], rec["b"] = rgb8[:, 0], rgb8[:, 1], rgb8[:, 2]
         f.write(rec.tobytes())
-        f.write(MOTION_TAG)
-        f.write(struct.pack("<d", GAME_EPOCH))
-        f.write(vel.astype("<f4").tobytes())
 
     print(f"{OUT_NAME}: {len(vmag)} stars including the Sun, {os.path.getsize(path)/1e6:.1f} MB, "
           f"positions at {GAME_EPOCH:.4f}")
     print(f"  apparent magnitudes {vmag.min():.2f} to {vmag.max():.2f} from here")
     print(f"  absolute magnitudes {absmag.min():.2f} to {absmag.max():.2f} "
-          f"-> bytes {scale.max()} to {scale.min()} ({moved} moved in to fit)")
+          f"-> bytes {scale.max()} to {scale.min()} ({moved} moved in to fit, {clipped} near ones shown at the faint limit)")
     print(f"  distances {dist[:-1].min():.2f} to {dist.max():.0f} pc; "
           f"{int(known.sum()) - 1} measured, {int((~known).sum())} parked at {UNKNOWN_DISTANCE_PC:.0f} pc")
     print(f"  nearest: {', '.join(f'{d:.2f} pc' for d in np.sort(dist[:-1][known[:-1]])[:5])}")
-    print(f"  temperatures {T.min():.0f} K to {T.max():.0f} K")
+    names = {star_colours.DWARF: "dwarfs", star_colours.GIANT: "giants", star_colours.SUPERGIANT: "supergiants"}
+    print("  coloured as " + ", ".join(f"{int((kinds == k).sum())} {n}" for k, n in names.items()) + ", and the Sun")
+    for label, hip in (("Vega", 91262), ("Sirius", 32349), ("Rigel", 24436), ("Arcturus", 69673),
+                       ("Aldebaran", 21421), ("Betelgeuse", 27989), ("Antares", 80763)):
+        i = np.flatnonzero(s["hip"] == hip)
+        if len(i):
+            c = rgb[i[0]]
+            print(f"    {label:10s} B-V {bv[i[0]]:5.2f} {names[kinds[i[0]]]:11s} ({c[0]:.3f}, {c[1]:.3f}, {c[2]:.3f})")
+    stock = {}
+    for sid, (hip, light) in STOCK_STARS.items():
+        i = np.flatnonzero(s["hip"] == hip)
+        if not len(i):
+            raise ValueError(f"{sid}: HIP {hip} is not in the catalogue")
+        stock[sid] = (light, rgb[i[0]], bv[i[0]], hip)
+        c = rgb[i[0]]
+        print(f"    {sid:15s} B-V {bv[i[0]]:5.2f} {names[kinds[i[0]]]:11s} ({c[0]:.3f}, {c[1]:.3f}, {c[2]:.3f})")
+    print(f"    the Sun                         ({sun_rgb[0]:.3f}, {sun_rgb[1]:.3f}, {sun_rgb[2]:.3f})")
+    write_sunlight(sun_rgb, stock)
     for name, v in (("brighter than 1", 1.0), ("naked eye (6)", 6.0), (f"all (<= {MAG_LIMIT})", MAG_LIMIT)):
         print(f"  {name:>16}: {int((vmag <= v).sum()):6d} stars")
 

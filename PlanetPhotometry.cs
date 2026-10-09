@@ -227,11 +227,13 @@ internal static class PlanetPhotometry
     /// the disc, and it is what a hull has to cover before the Sun has gone. Mirrors the star
     /// shader, which works out the same ring for the limb.
     /// </summary>
-    public static double WhiteRingPx(double magnitude)
+    /// <param name="whiteScale">White now over white at the default exposure (Exposure.WhiteScale): the Sun's
+    /// level follows it, so the ring is narrower at a lower exposure.</param>
+    public static double WhiteRingPx(double magnitude, double whiteScale = 1.0)
     {
         double flux = Math.Pow(10.0, -0.4 * (CompressMagnitude(magnitude) - MagRef));
         double peak = flux * Brightness * (PsfBeta - 1.0) / (Math.PI * PsfCore * PsfCore);
-        double ratio = Math.Max(peak / MaxOutput, 1.0);
+        double ratio = Math.Max(peak / (MaxOutput * whiteScale), 1.0);
         return PsfCore * Math.Sqrt(Math.Max(Math.Pow(ratio, 1.0 / PsfBeta) - 1.0, 0.0));
     }
 
@@ -365,7 +367,11 @@ internal static class PlanetPhotometry
         object? egoObj = _getPositionEgo?.Invoke(camera, new[] { celestial });
         if (egoObj == null) return null;
 
-        (double ex, double ey, double ez) = Vec(eclObj);     // body relative to its star
+        // Body relative to the star lighting the scene, which the engine lights it by too: since KSA 2026.10 a
+        // system can hold more than one, and Sol, at the origin, need not be the one.
+        GameStars.Light light = GameStars.Lighting;
+        (double ex, double ey, double ez) = Vec(eclObj);
+        (ex, ey, ez) = (ex - light.X, ey - light.Y, ez - light.Z);
         (double gx, double gy, double gz) = Vec(egoObj);     // body relative to the camera
         double sunDist = Math.Sqrt(ex * ex + ey * ey + ez * ez);
         double obsDist = Math.Sqrt(gx * gx + gy * gy + gz * gz);
@@ -378,10 +384,12 @@ internal static class PlanetPhotometry
         if (_diameterPixels?.Invoke(camera, new object[] { 2.0 * radius, obsDist }) is double px)
             pixelDiameter = px;
 
+        // The H above is for sunlight: a fainter star lights a body by as much less.
         double magnitude = ApparentMagnitude(radius, albedo, sunDist, obsDist, cosPhase,
                                              HasAtmosphere(celestial),
                                              Rings(celestial, template, radius, albedo, ex, ey, ez, gx, gy, gz),
-                                             Lit(celestial, ex, ey, ez));
+                                             Lit(celestial, ex, ey, ez, light))
+                         + GameStars.LightingFainter;
 
         // Twinkling, damped by the body's own angular size. A planet is a disc rather than a
         // point, so it averages over many turbulent cells and holds much steadier than a star:
@@ -400,8 +408,17 @@ internal static class PlanetPhotometry
                                                  obsDist, 0.0);
         if (covered > 0.0) magnitude -= 2.5 * Math.Log10(Math.Max(1.0 - covered, 1e-6));
 
+        // For the sprite's colour, read just after this in the same pass: what an eye sees of it depends on how
+        // bright it is (EyeColour, BodyColours.LitColour).
+        LastTemplate = template;
+        LastMagnitude = magnitude;
         return magnitude;
     }
+
+    /// <summary>The body measured last, and how bright it looks: the engine sizes a body's sprite and then reads
+    /// its colour, in the same pass, so the colour can follow the brightness.</summary>
+    internal static object? LastTemplate { get; private set; }
+    internal static double LastMagnitude { get; private set; } = double.NaN;
 
     private static Type? _atmosphericType;
     private static bool _atmosphericLookedUp;
@@ -503,13 +520,13 @@ internal static class PlanetPhotometry
     }
 
     private static PropertyInfo? _parentProp;
-    private static double _starRadius;
 
     /// <summary>
     /// Whether the body is in its parent's shadow. Only moons can be: a planet's parent is the
-    /// star itself, and a body cannot be eclipsed by what lights it.
+    /// star itself, and a body cannot be eclipsed by what lights it. Positions are relative to the
+    /// lighting star, which <paramref name="light"/> is.
     /// </summary>
-    private static double Lit(object celestial, double ex, double ey, double ez)
+    private static double Lit(object celestial, double ex, double ey, double ez, GameStars.Light light)
     {
         _parentProp ??= FindProperty(celestial.GetType(), "Parent");
         object? parent = _parentProp?.GetValue(celestial);
@@ -526,25 +543,10 @@ internal static class PlanetPhotometry
         object? parentEcl = eclMethod?.Invoke(parent, null);
         if (parentEcl == null) return 1.0;
         (double px, double py, double pz) = Vec(parentEcl);
+        (px, py, pz) = (px - light.X, py - light.Y, pz - light.Z);
+        if (!(light.Radius > 0.0)) return 1.0;
 
-        if (_starRadius <= 0.0) _starRadius = StarRadius(parent);
-        if (_starRadius <= 0.0) return 1.0;
-
-        return LitFraction(ex - px, ey - py, ez - pz, px, py, pz, parentRadius, _starRadius);
-    }
-
-    /// <summary>Radius of whatever sits at the root of the parent chain: the star.</summary>
-    private static double StarRadius(object body)
-    {
-        for (int i = 0; i < 8 && body != null; i++)
-        {
-            PropertyInfo? p = FindProperty(body.GetType(), "Parent");
-            object? next = p?.GetValue(body);
-            if (next == null)
-                return FindProperty(body.GetType(), "MeanRadius")?.GetValue(body) is double r ? r : 0.0;
-            body = next;
-        }
-        return 0.0;
+        return LitFraction(ex - px, ey - py, ez - pz, px, py, pz, parentRadius, light.Radius);
     }
 
     private static readonly Dictionary<Type, FieldInfo?> _scatteringFields = new();

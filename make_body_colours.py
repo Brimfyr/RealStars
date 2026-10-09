@@ -3,8 +3,8 @@
 
 A body's colour here is its colour in white light: its albedo per channel with the Sun as white, as its maps
 are. That is the reflected sunlight's linear sRGB over the Sun's own, both through the same CIE 1931 observer
-and 5778 K Sun as make_star_binary.py, so the Sun's raw colour (SunLight.SunRaw) times this is the reflected
-light exactly. Real Stars lights it with the star's light in game (BodyColours.cs). Written at unit luminance:
+and measured solar spectrum as make_star_binary.py (star_colours.py), so the Sun's raw colour (SunLight.SunRaw)
+times this is the reflected light exactly. Real Stars lights it with the star's light in game (BodyColours.cs). Written at unit luminance:
 how bright a body is, in the sky and as planetshine, comes from its albedo (make_body_albedos.py).
 
 Each body's reflectance spectrum comes from the measurements listed with it: linear between measured
@@ -20,7 +20,8 @@ import os
 import urllib.request
 import numpy as np
 
-from make_star_binary import SUN_BV, cie_xyz, planck, teff_from_bv
+from make_star_binary import cie_xyz
+import star_colours
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "BodyColours.Generated.cs")
@@ -191,7 +192,7 @@ BODIES = [
 def in_white_light(reflectance):
     """Linear sRGB of the reflected sunlight over the Sun's own, per channel, then at unit luminance."""
     x, y, z = cie_xyz(GRID)
-    sun = planck(GRID, np.array([teff_from_bv(SUN_BV)]))[0]
+    sun = np.interp(GRID, *star_colours.sun_spectrum())
 
     def rgb(s):
         return XYZ_TO_RGB @ np.array([s @ x, s @ y, s @ z])

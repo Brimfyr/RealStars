@@ -26,13 +26,15 @@ namespace RealStars;
 /// approach, shrinking as you leave. This class only manages the handover: the engine's sprite
 /// fades out as the disc falls below a couple of pixels, ours fades in, and the last spare int
 /// of the lighting uniform carries the crossfade to the shader.
+///
+/// "The Sun" is whichever star lights the scene, since KSA 2026.10 put other stars in the system:
+/// the star nearest the camera, which the engine lights everything by and draws the sphere of.
+/// Its place, size and brightness are GameStars'; its brightness is its own, not Sol's.
 /// </summary>
 internal static class SunGlow
 {
-    /// <summary>Apparent magnitude of the Sun at 1 AU. The rest is distance and size.</summary>
-    public const double SolarMagnitudeAt1Au = -26.74;
-    public const double SolarRadiusM = 6.957e8;
     private const double Au = 1.495978707e11;
+    private const double ParsecM = 3.0856775814913673e16;
 
     /// <summary>
     /// The handover, in pixels of the Sun's disc RADIUS. The engine's sprite holds above the
@@ -59,22 +61,29 @@ internal static class SunGlow
     /// </summary>
 
     /// <summary>
-    /// What a star of this radius would look like from this distance, in magnitudes.
-    ///
-    /// Scaled from the Sun by surface area, which assumes solar surface brightness: exact for
-    /// Sol, and the right direction for a modded star, since the template carries a radius but
-    /// no luminosity or temperature to do better with.
+    /// What a star of this V absolute magnitude looks like from this distance: Pogson, through the
+    /// distance in units of the ten parsecs an absolute magnitude is quoted at. The Sun's 4.80 (the
+    /// catalogue's byte for it) makes it -26.77 from 1 AU.
     /// </summary>
-    public static double Magnitude(double distanceM, double radiusM)
+    public static double Magnitude(double distanceM, double absMag)
+        => absMag + 5.0 * Math.Log10(Math.Max(distanceM, 1.0) / (10.0 * ParsecM));
+
+    /// <summary>
+    /// The lighting star for the shaders, in the lighting block's last spare int: its disc's radius
+    /// in pixels and its V absolute magnitude, as two halves. Half precision holds a disc to a
+    /// quarter of a pixel at a thousand and a magnitude to a hundredth; a disc past 65,000 px fills
+    /// any screen, and is held there. Never zero, which the shaders read as nothing written yet.
+    /// </summary>
+    public static int LightWord(double discPx, double absMag)
     {
-        double au = Math.Max(distanceM, 1.0) / Au;
-        double sizeRatio = Math.Max(radiusM, 1.0) / SolarRadiusM;
-        return SolarMagnitudeAt1Au + 5.0 * Math.Log10(au) - 5.0 * Math.Log10(sizeRatio);
+        double disc = discPx >= 0.0 ? Math.Min(discPx, 65000.0) : 0.0;
+        int word = LimbAir.Halves(disc, absMag);
+        return word != 0 ? word : LimbAir.Halves(disc, 1e-3);
     }
 
-    private static FieldInfo? _flareArray, _sunDotField, _lightingArray, _lpPad1;
+    private static FieldInfo? _flareArray, _sunDotField, _lightingArray, _lpPad4;
     private static PropertyInfo? _worldSun;
-    private static MethodInfo? _sunPositionEcl, _cameraPositionEcl, _diameterPixels;
+    private static MethodInfo? _cameraPositionEcl, _diameterPixels;
     private static readonly Dictionary<Type, PropertyInfo?> _shaderSlots = new();
     private static readonly Dictionary<Type, MethodInfo?> _cameras = new();
     private static int _consecutiveFailures;
@@ -93,15 +102,19 @@ internal static class SunGlow
         // First, and outside the try, because it is wanted on every frame and none of the
         // sun-sprite work below is a reason to skip it.
         Starburst.Publish(__instance, viewport);
+        Starburst.ClearStaleBodies(__instance, viewport);
+        Exposure.Publish();
 
         try
         {
             _worldSun ??= AccessTools.Property(AccessTools.TypeByName("KSA.Universe")!, "WorldSun");
-            object? sun = _worldSun?.GetValue(null);
-            if (sun == null) return;
+            if (_worldSun?.GetValue(null) == null) return;
 
-            if (PlanetPhotometry.FindPropertyPublic(sun.GetType(), "MeanRadius")?.GetValue(sun)
-                is not double radius || radius <= 0.0) return;
+            // The star lighting the scene, as GameStars found it this frame: where it is, its size and how
+            // bright it is. Its postfix runs ahead of this one.
+            GameStars.Light light = GameStars.Lighting;
+            double radius = light.Radius;
+            if (!(radius > 0.0)) return;
 
             Type vt = viewport.GetType();
             if (!_cameras.TryGetValue(vt, out MethodInfo? getCamera))
@@ -109,15 +122,11 @@ internal static class SunGlow
             object? camera = getCamera?.Invoke(viewport, null);
             if (camera == null) return;
 
-            // The star sits at the system's origin, near enough, but take its position anyway:
-            // a modded system need not agree.
-            _sunPositionEcl ??= AccessTools.Method(sun.GetType(), "GetPositionEcl", Type.EmptyTypes);
             _cameraPositionEcl ??= AccessTools.PropertyGetter(camera.GetType(), "PositionEcl");
-            object? sunEcl = _sunPositionEcl?.Invoke(sun, null);
             object? camEcl = _cameraPositionEcl?.Invoke(camera, null);
-            if (sunEcl == null || camEcl == null) return;
+            if (camEcl == null) return;
 
-            (double sx, double sy, double sz) = PlanetPhotometry.VecPublic(sunEcl);
+            double sx = light.X, sy = light.Y, sz = light.Z;
             (double cx, double cy, double cz) = PlanetPhotometry.VecPublic(camEcl);
             double dx = cx - sx, dy = cy - sy, dz = cz - sz;
             double distance = Math.Sqrt(dx * dx + dy * dy + dz * dz);
@@ -171,7 +180,7 @@ internal static class SunGlow
             // that is what a hull has to cover before the Sun has gone. The geometric disc alone
             // is a quarter of the white at 1 AU, and asking about it called the Sun covered
             // while most of what looked like it was still showing.
-            double whitePx = PlanetPhotometry.WhiteRingPx(Magnitude(distance, radius));
+            double whitePx = PlanetPhotometry.WhiteRingPx(Magnitude(distance, light.AbsMag), Exposure.WhiteScale);
             double looksAngular = (radius / distance) * (discPx + whitePx) / Math.Max(discPx, 1e-6);
             double covered = VesselOcclusion.Covered(camera, -dx / distance, -dy / distance,
                                                      -dz / distance, distance, looksAngular);
@@ -184,15 +193,15 @@ internal static class SunGlow
             if (_lightingArray?.GetValue(null) is Array lighting && slot < lighting.Length)
             {
                 object lbox = lighting.GetValue(slot)!;
-                _lpPad1 ??= AccessTools.Field(lbox.GetType(), "lpPad4");   // the disc's size, in pixels, as float bits
-                _lpPad1?.SetValue(lbox, BitConverter.SingleToInt32Bits((float)discPx));
+                _lpPad4 ??= AccessTools.Field(lbox.GetType(), "lpPad4");   // the disc's size and the star's magnitude
+                _lpPad4?.SetValue(lbox, LightWord(discPx, light.AbsMag));
                 lighting.SetValue(lbox, slot);
             }
             _consecutiveFailures = 0;
 
             if (!_logged)
             {
-                ShaderShadow.Log($"sun drawn as a star at every distance: V {Magnitude(distance, radius):F1} "
+                ShaderShadow.Log($"sun drawn as a star at every distance: V {Magnitude(distance, light.AbsMag):F1} "
                                  + $"at {distance / Au:F2} AU (its disc would be {discPx:F1} px; "
                                  + "the engine's own flare is off)");
                 _logged = true;

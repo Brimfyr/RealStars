@@ -20,7 +20,7 @@ No game files are modified. At launch the mod builds patched copies of the game'
 
 \[\*]Parallax: stars sit at their real distances and shift as you travel
 
-\[\*]Proper motion: stars are placed for the game's date and move on as time passes
+\[\*]Each star is where it is on the game's start date (2025-11-30), carried there along its own measured motion
 
 \[\*]Twinkling through atmospheres, stronger and more colourful toward the horizon, following simulation time
 

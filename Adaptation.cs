@@ -43,9 +43,13 @@ internal static class Adaptation
     /// <summary>Where the per-frame scale goes: CompositeData's tone-curve block, padding of segments 0 and 1.</summary>
     internal static readonly int[] PaddingOffsets = { 24, 28, 56 };
 
-    // Fairchild and Reniff (1995): about 60% of the adaptation in the first 5 s, 90% after a minute. A fast stage
-    // (time constant ~1 s) carrying 55%, and a slow one with a half-life of 30 s.
+    // Fairchild and Reniff (1995): about 60% of the adaptation in the first 5 s, 90% after a minute, 94% at 90 s. A fast
+    // stage (time constant ~1 s) carrying 55%, and a slow one with a half-life of 30 s. That is how long people take
+    // between rooms; the player sets how long the eye takes here, by its fast stage (Settings.AdaptationFastSeconds; the
+    // whole course's time to 94% is thirty times that, Settings.AdaptationSeconds), and both stages are scaled to it,
+    // so 90 s is the measured course and a shorter one keeps its shape at a game's pace.
     internal const double FastShare = 0.55, FastSeconds = 1.0, SlowSeconds = 30.0 / 0.6931471805599453;
+    internal const double MeasuredSeconds = 90.0;
     private const double EstimateEvery = 0.1;             // seconds between looks at the scene
 
     private static PropertyInfo? _sunlight, _program;
@@ -63,6 +67,18 @@ internal static class Adaptation
     /// <summary>The star's raw light as the game has it this frame, which lights the bodies (BodyColours); null
     /// before the first frame, or without the adaptation.</summary>
     internal static (float R, float G, float B)? Light => _lastLight.R < 0f ? null : _lastLight;
+
+    /// <summary>The white the eye is adapted to now, as its cone signals over D65's: L/M and S/M, with M at 1. (1, 1)
+    /// is an eye adapted to D65, which is what an unadapted frame shows as white. A faint star's colour fades into
+    /// this (EyeColour).</summary>
+    internal static (double L, double S) EyeRatios
+    {
+        get
+        {
+            float[] s = _scale;
+            return s[0] > 0f && s[2] > 0f ? (s[1] / (double)s[0], s[1] / (double)s[2]) : (1.0, 1.0);
+        }
+    }
 
     /// <summary>Adapt to the scene's light (SceneLight) rather than the star's alone.</summary>
     internal static void UseScene(bool on) => _scene = on;
@@ -158,10 +174,12 @@ internal static class Adaptation
         return new[] { (float)(white[0] / eye[0]), (float)(white[1] / eye[1]), (float)(white[2] / eye[2]) };
     }
 
-    /// <summary>One step of the eye's two stages toward its target over dt seconds; the white it gives.</summary>
-    internal static double[] Ease(double[] target, double[] fast, double[] slow, double dt)
+    /// <summary>One step of the eye's two stages toward its target over dt seconds, for an eye that takes `seconds` to
+    /// get 94% of the way (the measured course by default); the white it gives.</summary>
+    internal static double[] Ease(double[] target, double[] fast, double[] slow, double dt, double seconds = MeasuredSeconds)
     {
-        double f = 1.0 - Math.Exp(-dt / FastSeconds), s = 1.0 - Math.Exp(-dt / SlowSeconds);
+        double k = Math.Max(seconds, 1e-3) / MeasuredSeconds;
+        double f = 1.0 - Math.Exp(-dt / (FastSeconds * k)), s = 1.0 - Math.Exp(-dt / (SlowSeconds * k));
         var eye = new double[3];
         for (int i = 0; i < 3; i++)
         {
@@ -178,12 +196,21 @@ internal static class Adaptation
     {
         try
         {
+            Settings.Load();
+            Settings.SaveIfSettled();
             object? light = _sunlight!.GetValue(null);
             object? program = _program!.GetValue(null);
             if (light == null || program == null)
                 return;
             _lastLight = ((float)_x!.GetValue(light)!, (float)_y!.GetValue(light)!, (float)_z!.GetValue(light)!);
-            if (_scene)
+            if (!Settings.ColourAdaptation)
+            {
+                // Switched off: the frame as it is, which is an eye adapted to the display's white. No state is
+                // kept, so that switched on again the eye starts adapted to what it sees, as on its first look.
+                _scale = new[] { 1f, 1f, 1f };
+                _target = _fast = _slow = null;
+            }
+            else if (_scene)
             {
                 if (SceneLight.IsMain(viewport))
                     Look(viewport);
@@ -233,7 +260,7 @@ internal static class Adaptation
             _fast = (double[])_target.Clone();            // the first look: the eye starts adapted, with no state before it
             _slow = (double[])_target.Clone();
         }
-        _scale = ScaleForWhite(Ease(_target, _fast, _slow, dt));
+        _scale = ScaleForWhite(Ease(_target, _fast, _slow, dt, Settings.AdaptationSeconds));
     }
 
     /// <summary>Writes the scale into a boxed CompositeData, in place.</summary>

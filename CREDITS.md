@@ -8,15 +8,16 @@ sources and terms.
 | `assets/RealStars.bin` | Built by `make_star_binary.py` from [AT-HYG](https://www.astronexus.com/projects/at-hyg) v3.2, magnitude-10 subset, by David Nash, and from the Hipparcos main catalogue (`hip_main.dat`), ESA 1997, *The Hipparcos and Tycho Catalogues*, ESA SP-1200, retrieved from VizieR as catalogue I/239 | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), as an adaptation of AT-HYG. Acknowledgements below |
 
 AT-HYG combines Tycho-2, Gaia DR3, Hipparcos, the Yale Bright Star Catalog and the Gliese-Jahreiss
-Catalog. It supplies the stars to V = 9, their V magnitudes, B−V colours, distances, proper motions
+Catalog. It supplies the stars to V = 9 and every star within 20 parsecs, their V magnitudes, B−V colours, distances, proper motions
 and radial velocities; most distances and motions are Gaia DR3's. Hipparcos supplies the positions of
 the 83,337 stars it has, because AT-HYG's are not all at one epoch.
 
-The binary holds, per star, a position in parsecs, an absolute V magnitude, an RGB colour and a
-velocity. All are derived: the position from right ascension, declination and distance, carried to
-the game's start date (2025-11-30) along the star's motion; the magnitude from V and distance; the
-colour from B−V through an effective temperature, a Planck spectrum and the CIE 1931 observer; the
-velocity from proper motion, radial velocity and distance. The Sun is added as a star at the origin.
+The binary holds, per star, a position in parsecs, an absolute V magnitude and an RGB colour. All
+are derived: the position from right ascension, declination and distance, carried to the game's start
+date (2025-11-30) along the star's motion, which is its proper motion, radial velocity and distance; the
+magnitude from V and distance; the colour from B−V and luminosity class through the spectra of real stars
+of that kind (below) and the CIE 1931 observer. The Sun is added as a star at the origin, in the colour of
+a measured solar spectrum.
 
 `assets/RealStars.bin` may be shared and adapted under CC BY-SA 4.0: credit the sources above, and
 release adaptations under the same licence.
@@ -52,6 +53,35 @@ Astrophysical Quantities (Cox 2000), Titan's from Cassini (Garcia Munoz et al. 2
 phase integrals from Voyager, Cassini, New Horizons and ground photometry (as compiled by Brucker et al. 2009
 and the JPL Solar System Dynamics group), asteroid albedos from the JPL Small-Body Database and the irregular
 satellites' from NEOWISE (Grav et al. 2015).
+
+## Star estimates
+
+A star in a modded system that is not in the catalogue is given a brightness from its own mass and radius
+(`StarEstimates.Generated.cs`, compiled into the mod, from `make_star_estimates.py`): the mean dwarf
+sequence of M. J. Pecaut and E. E. Mamajek (2013, ApJS 208, 9, Table 5), in the version E. Mamajek keeps at
+[pas.rochester.edu/~emamajek](https://www.pas.rochester.edu/~emamajek/EEM_dwarf_UBVIJHK_colors_Teff.txt)
+(2022.04.16): mass, V absolute magnitude, radius, effective temperature and bolometric correction for each
+spectral type. Its author asks that Pecaut & Mamajek (2013) be cited when it is used.
+
+## Star colours
+
+Each star's colour (`star_colours.py`) is that of real spectra of its kind at its B−V: the empirical stellar
+spectral flux library of A. J. Pickles (1998, PASP 110, 863), averages of observed stars for each spectral type
+and luminosity class, as STScI distributes it (CDBS, `grid/pickles/dat_uvk`). The dwarfs are placed at the
+standard B−V of their types (Pecaut & Mamajek 2013, above), the giants at the median measured B−V of the
+catalogue's own giants of each type within 150 parsecs. The Sun's colour, and the G2 dwarf of the sequence, is
+the CALSPEC solar reference spectrum `sun_reference_stis_002` (Bohlin, Dickinson & Calzetti 2001, AJ 122, 2118;
+STScI), measured: Neckel & Labs (1984) through the visible, Woods et al. (1996) below 410 nm. Before use the red dwarfs were checked against the SDSS template spectra of Kesseli et al. (2017,
+ApJS 230, 16), which agree with Pickles' to within 0.01 in CIE u′v′.
+
+The game's own interstellar stars light in their stars' colours from the same catalogue (`SunLight.Generated.cs`),
+at the brightness the game gives them.
+
+What an eye sees of a faint star's colour (`EyeColour.cs`) follows observations of point lights: the faintest stars
+with naked-eye colours on record are orange and red at V 3.3 (Neuhäuser et al. 2022, MNRAS 516, 693); small lights
+as bright as a V +1.3 to +2.0 star cannot be told blue from green (Hill 1947, Proc. Phys. Soc. 59, 560); in small
+lights yellow stays distinct from white where blue does not (Holmes 1949, Documenta Ophthalmologica 3, 240). The
+blindness of the fovea's centre to blue (Wald 1967, JOSA 57, 1289) is left to the player's own eye.
 
 ## Not shipped
 

@@ -98,6 +98,15 @@ public class ModMain
             MethodInfo load = AccessTools.Method(modType, "LoadStarBinaries")!;
             harmony.Patch(load, prefix: new HarmonyMethod(typeof(Patches),
                                             nameof(Patches.LoadStarBinariesPrefix)) { priority = Priority.Low });
+
+            // And room after it for the game's own stars, which our star pass draws (GameStars):
+            // the instance buffer is sized from the total of every mod's count, so it grows by as much.
+            MethodInfo? total = AccessTools.TypeByName("KSA.ModLibrary") is Type library
+                ? AccessTools.Method(library, "GetStarCount", Type.EmptyTypes) : null;
+            if (total != null && total.IsStatic && total.ReturnType == typeof(int))
+                harmony.Patch(total, postfix: new HarmonyMethod(typeof(GameStars), nameof(GameStars.GetStarCountPostfix)));
+            else
+                ShaderShadow.Log("WARN: ModLibrary.GetStarCount not found; the game's stars stay the engine's dots");
         }
         else
         {
@@ -141,22 +150,53 @@ public class ModMain
             ShaderShadow.Log("WARN: PlanetRenderer.UpdatePlanetShaderData not found; stars will not twinkle");
 
         // The Sun's distant sprite, onto the same scale as the stars. Its two sizes are floored
-        // by the engine, so it stops shrinking once it is a sprite at all.
+        // by the engine, so it stops shrinking once it is a sprite at all. "The Sun" is whichever
+        // star lights the scene, which GameStars works out first: where it is and how bright.
         MethodInfo? updateShaderData = renderProgram == null
             ? null : AccessTools.Method(renderProgram, "UpdateShaderData", new[] { typeof(double), AccessTools.TypeByName("KSA.IViewport")! });
         if (updateShaderData != null)
+        {
+            harmony.Patch(updateShaderData,
+                postfix: new HarmonyMethod(typeof(GameStars), nameof(GameStars.UpdateShaderDataPostfix)));
             harmony.Patch(updateShaderData,
                 postfix: new HarmonyMethod(typeof(SunGlow), nameof(SunGlow.UpdateShaderDataPostfix)));
+        }
         else
             ShaderShadow.Log("WARN: Program.UpdateShaderData not found; the Sun keeps its stock sprite");
 
-        // The stars' own motion. The date is only known once a save is open, well after the
-        // catalogue loads, so the sky is moved on from the same per-frame update.
-        if (updateShaderData != null && Patches.StarBinary != null)
-            harmony.Patch(updateShaderData,
-                postfix: new HarmonyMethod(typeof(StarMotion), nameof(StarMotion.UpdateShaderDataPostfix)));
-        else if (Patches.StarBinary != null)
-            ShaderShadow.Log("WARN: Program.UpdateShaderData not found; the stars stay at the game's start date");
+        // The star's sphere from inside its own mesh, where the engine draws nothing of it (SunSphere). Without
+        // it the sprite is the star there instead (Starburst), so this is left to fail by itself.
+        if (SunSphere.Target() is MethodInfo sphereSetup)
+        {
+            try
+            {
+                harmony.Patch(sphereSetup,
+                    postfix: new HarmonyMethod(typeof(SunSphere), nameof(SunSphere.CreateMeshRendererPostfix)));
+            }
+            catch (Exception ex)
+            {
+                ShaderShadow.Log("WARN: the star sphere's pipeline was left as the engine sets it: " + ex.GetType().Name);
+            }
+        }
+        else
+            ShaderShadow.Log("WARN: SunRenderer.CreateMeshRenderer not found; inside its mesh the star is drawn by its sprite");
+
+        // The free camera's clamp off the star it follows, which the game measures from the system's origin: near
+        // any star but the first it threw the camera across the system (StarCamera). Left to fail by itself too.
+        if (StarCamera.Target() is MethodInfo cameraClamp)
+        {
+            try
+            {
+                harmony.Patch(cameraClamp,
+                    prefix: new HarmonyMethod(typeof(StarCamera), nameof(StarCamera.ClampCameraPrefix)));
+            }
+            catch (Exception ex)
+            {
+                ShaderShadow.Log("WARN: the free camera's clamp was left as the game has it: " + ex.GetType().Name);
+            }
+        }
+        else
+            ShaderShadow.Log("WARN: FlyController.ClampCamera not found; the free camera's clamp is the game's");
 
         // The eye's adaptation to the light it is in (Adaptation), with every light raw: the stock Sol's
         // white is read as the Sun's raw colour (SunLight). Only together, or Sol would show its raw,
@@ -185,6 +225,9 @@ public class ModMain
         // transpiler, and planetshine is set to the real irradiance after the engine sets its own. Each fails soft
         // on its own; the maps of bodies without measurements are read through the game's KTX library (MapColour).
         MethodInfo? spriteData = distance == null ? null : AccessTools.Method(distance, "UpdateRenderData");
+        if (spriteData != null && Patches.StarBinary != null)
+            harmony.Patch(spriteData,
+                transpiler: new HarmonyMethod(typeof(GameStars), nameof(GameStars.AppendStarsTranspiler)));
         bool shine = false;
         if (BodyColours.Resolve(modType))
         {
@@ -208,6 +251,7 @@ public class ModMain
 
         ShaderShadow.Log("installed (star shader redirect active"
                          + (Patches.StarBinary != null ? ", own catalogue" : ", stock catalogue")
+                         + (GameStars.DotsPatched ? ", the game's stars drawn as the Sun is" : "")
                          + (sizeScale != null ? ", photometric planets" : "")
                          + (BodyColours.SpritesPatched ? $", {BodyColours.Measured.Count} measured body colours" : "")
                          + (shine ? $", planetshine with {BodyColours.MeasuredPhotometry.Count} measured albedos)" : ")"));
@@ -287,8 +331,7 @@ internal static class Patches
     /// and the distance that sets how bright it looks from there.
     ///
     /// The public AddInstance normalises too, so this uses the overload that takes the instance
-    /// struct whole. The velocities after the records go to StarMotion, which moves the stars on
-    /// to the game's date.
+    /// struct whole. The positions are the sky of the game's start date, and stay there: see StarBuffer.
     /// </summary>
     public static bool LoadStarBinariesPrefix(object __instance, object starTechnique)
     {
@@ -328,8 +371,9 @@ internal static class Patches
                 float x = reader.ReadSingle(), y = reader.ReadSingle(), z = reader.ReadSingle();
                 byte magnitude = reader.ReadByte();
                 byte r = reader.ReadByte(), g = reader.ReadByte(), b = reader.ReadByte();
-                // Same packing the game uses: colour in the top three bytes, magnitude in the low one.
-                uint packed = ((uint)b << 24) | ((uint)g << 16) | ((uint)r << 8) | magnitude;
+                // Same packing the game uses: colour in the top three bytes, red highest, magnitude in the
+                // low one. See GameStars.ColourBits, and what having red and blue exchanged here did.
+                uint packed = GameStars.ColourBits(r, g, b) | magnitude;
                 start[3 * i] = x;
                 start[3 * i + 1] = y;
                 start[3 * i + 2] = z;
@@ -342,27 +386,24 @@ internal static class Patches
                 _addInstance!.Invoke(starTechnique, args);
             }
 
-            // Each star's velocity follows the records, where the game's own reader never looks:
-            // a tag, the epoch the positions are at, then a float3 per star in parsecs per year.
-            float[]? velocity = null;
-            double epoch = StarMotion.GameEpochYear;
-            if (stream.Length - stream.Position == 4 + 8 + 12L * count
-                && reader.ReadBytes(4).AsSpan().SequenceEqual("RSM1"u8))
-            {
-                epoch = reader.ReadDouble();
-                velocity = new float[3 * count];
-                for (int j = 0; j < velocity.Length; j++)
-                    velocity[j] = reader.ReadSingle();
-            }
-
             if (!_loadedStars)
             {
-                ShaderShadow.Log($"loaded {count} stars as 3D positions; parallax is live"
-                                 + (velocity == null ? "; no motion block, so they stay put" : ""));
+                ShaderShadow.Log($"loaded {count} stars as 3D positions, as at the game's start date; parallax is live");
                 _loadedStars = true;
             }
-            if (velocity != null)
-                StarMotion.Attach(starTechnique, viewport, start, packedAll, velocity, epoch);
+
+            // Room after the catalogue for the game's own stars, which GameStars places each frame.
+            // Hidden until then: a magnitude byte of zero is a star Star.vert does not draw.
+            int room = GameStars.Room(starTechnique, viewport);
+            for (int i = 0; i < room; i++)
+            {
+                object sprite = Activator.CreateInstance(_spriteType)!;
+                _spritePosition!.SetValue(sprite, _float3Ctor!.Invoke(new object[] { 2f * GameStars.Mark, 0f, 0f }));
+                _spritePacked!.SetValue(sprite, 0u);
+                args[1] = sprite;
+                _addInstance!.Invoke(starTechnique, args);
+            }
+            GameStars.Attach(starTechnique, viewport, start, packedAll, room);
             return false;                                  // ours is loaded; skip the game's reader
         }
         catch (Exception ex)

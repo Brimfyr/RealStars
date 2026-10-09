@@ -4,15 +4,15 @@ using HarmonyLib;
 namespace RealStars;
 
 /// <summary>
-/// Keeps the Sun when the stars are switched off in the settings.
+/// Keeps the Sun, and the game's own stars, when the stars are switched off in the settings.
 ///
 /// The Sun is a star in our catalogue, drawn by the star pass at every distance. The engine skips
 /// that whole pass when GameSettings.Graphics.Stars is off, and our Sun went with it, where the
 /// stock game's did not: its Sun was drawn by the bloom pass, which we turned off. So on those
 /// frames the star pass is drawn anyway, straight after the distant planets, which every view
-/// that shows the sky draws whatever the setting. Star.vert leaves out every star but the Sun
-/// (Starburst writes the flag), and the Milky Way, which the engine draws with the stars, stays
-/// off.
+/// that shows the sky draws whatever the setting. Star.vert leaves out the catalogue and keeps the
+/// Sun and the game's other stars, as the engine's dots for them stayed (Starburst writes the flag),
+/// and the Milky Way, which the engine draws with the stars, stays off.
 /// </summary>
 internal static class StarsOff
 {
