@@ -64,10 +64,20 @@ foreach ($name in $assets) {
 
 $zip = Join-Path $dist ("RealStars-v{0}-ksa{1}.zip" -f $Version, $GameBuild.TrimStart("v"))
 if (Test-Path $zip) { Remove-Item $zip -Force }
-# ZipFile rather than Compress-Archive: Windows PowerShell 5.1's Compress-Archive writes backslash entry
-# names, which break extraction on Linux (KSA ships a Linux build).
+# Each entry is named here, with forward slashes, as the ZIP format requires. Under Windows PowerShell 5.1 both
+# Compress-Archive and ZipFile.CreateFromDirectory write backslashes, which Linux extracts as part of the file
+# name instead of as folders (KSA ships a Linux build).
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-[System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
+$base = $dist.TrimEnd('\') + '\'
+$archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($file in (Get-ChildItem $stage -Recurse -File | Sort-Object FullName)) {
+        $entry = $file.FullName.Substring($base.Length).Replace('\', '/')
+        [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $archive, $file.FullName, $entry, [System.IO.Compression.CompressionLevel]::Optimal)
+    }
+} finally { $archive.Dispose() }
 
 $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 # One LF-terminated line: with Set-Content's CRLF, `sha256sum -c` reads the name with a trailing CR.
