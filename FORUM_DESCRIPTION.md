@@ -1,8 +1,8 @@
 \[HEADING=1]Real Stars\[/HEADING]
 
-Stars, planets and the Sun drawn with their real brightness, colour and position, for Kitten Space Agency. A \[URL='https://github.com/StarMapLoader/StarMap']StarMap\[/URL] mod.
+Stars, planets and the Sun drawn with their real brightness, colour and position, for Kitten Space Agency. A \[URL=https://github.com/StarMapLoader/StarMap]StarMap\[/URL] mod.
 
-No game files are modified. At launch the mod builds patched copies of the game's star, planet and Sun shaders and loads those instead. If a game update changes one of those shaders, it is left stock until the mod is updated. Works alongside Real Atmospheres.
+No game files are modified: the mod loads patched copies of the game's star, planet and Sun shaders at launch. Use the release built for your KSA version. Works alongside Real Atmospheres.
 
 \[HEADING=2]Download\[/HEADING]
 
@@ -14,15 +14,17 @@ No game files are modified. At launch the mod builds patched copies of the game'
 
 \[LIST]
 
-\[\*]123,568 stars from the AT-HYG catalogue, to magnitude 9, coloured from their B−V index
+\[\*]124,585 stars from the AT-HYG catalogue: every star to magnitude 9, and every star within 20 parsecs
+
+\[\*]Colours from real stellar spectra
+
+\[\*]Faint stars fade toward white, as the eye sees them
 
 \[\*]Brightness from magnitude, drawn with a realistic point spread function
 
 \[\*]Parallax: stars sit at their real distances and shift as you travel
 
-\[\*]Each star is where it is on the game's start date (2025-11-30), carried there along its own measured motion
-
-\[\*]Twinkling through atmospheres, stronger and more colourful toward the horizon, following simulation time
+\[\*]Twinkling through atmospheres, following simulation time
 
 \[/LIST]
 
@@ -32,45 +34,55 @@ No game files are modified. At launch the mod builds patched copies of the game'
 
 \[\*]Brightness from albedo, phase and distance, on the same magnitude scale as the stars
 
-\[\*]Saturn's rings add to its brightness
+\[\*]Measured colours for the Solar System's planets, moons and small bodies
 
-\[\*]Planets and moons dim in their parent's shadow
+\[\*]Planetshine on vessels at its real strength, from every body
 
-\[\*]Twinkling reduced by apparent size
+\[\*]Rings add to a planet's brightness, and planets and moons dim in their parent's shadow
 
 \[/LIST]
 
-\[HEADING=3]The Sun\[/HEADING]
+\[HEADING=3]The Sun and the other stars\[/HEADING]
 
 \[LIST]
 
-\[\*]Drawn as a star at every distance, at its real angular size, shrinking into the 3D sphere up close
+\[\*]Drawn as a star at every distance, at its real angular size, blending into the 3D sphere up close
 
-\[\*]Sphere at its real size and photosphere colour, with limb darkening
+\[\*]Sphere at its real size and colour, with limb darkening
 
-\[\*]Dims as it fills more of the screen
+\[\*]Every star in the game's systems is drawn the same way, at its measured brightness: Alpha Centauri, Barnard's Star and Tau Ceti included
 
 \[\*]Replaces the stock sun sprite and lens flare
 
 \[/LIST]
 
-\[HEADING=3]Occlusion and starbursts\[/HEADING]
+\[HEADING=3]Light and the eye\[/HEADING]
 
 \[LIST]
 
-\[\*]Stars, planets and the Sun fade behind planets, atmospheres and vessels, and the Sun's starburst behind clouds
+\[\*]Every star lights its planets in its real colour
 
-\[\*]Starbursts modelled on a simulation of the human eye: about a thousand fine needles with coloured fringes, on the Sun, the bright planets and the brightest stars
+\[\*]The eye adapts to the light in view, as far as human vision does: sunlit scenes look nearly white, a red dwarf's stay warm
 
-\[\*]A soft glow around bright sources, the eye's veiling glare, gives the Sun a corona
+\[\*]Adaptation follows the real light level and takes time, at a pace you set
 
-\[\*]The Sun's starburst comes from the part of the Sun still in view, in the colour of the sunlight reaching you
+\[/LIST]
 
-\[\*]Starbursts fade as their source is covered or leaves the screen
+\[HEADING=3]Starbursts and glare\[/HEADING]
 
-\[\*]The Sun's starburst is drawn over everything else
+\[LIST]
 
-\[\*]Starbursts follow the game's lens flare setting, and the game's bloom settings no longer bury them
+\[\*]Starbursts modelled on the human eye: fine needles with coloured fringes, on the Sun, the bright planets and the brightest stars
+
+\[\*]A soft glow around bright sources, which gives the Sun a corona
+
+\[\*]Glare that burns out to white close to a bright source
+
+\[\*]Stars, planets and the Sun fade behind planets, atmospheres, clouds, rings and vessels
+
+\[\*]A partly covered Sun throws its starburst from the part still in view
+
+\[\*]Follows the game's Lens Flare and Tonemap Exposure settings
 
 \[/LIST]
 
@@ -78,21 +90,37 @@ No game files are modified. At launch the mod builds patched copies of the game'
 
 \[SPOILER="Show images"]
 
-\[ATTACH type="full" alt="earth-and-orion.jpg"]2021\[/ATTACH]
+\[ATTACH type="full" alt="orion-and-pleiades.jpg"]ID\[/ATTACH]
 
-\[ATTACH type="full" alt="moon-surface.jpg"]2022\[/ATTACH]
+\[ATTACH type="full" alt="sun-from-moon-surface.jpg"]ID\[/ATTACH]
 
-\[ATTACH type="full" alt="orbit-sunset.jpg"]2023\[/ATTACH]
+\[ATTACH type="full" alt="orbital-sunrise.jpg"]ID\[/ATTACH]
 
-\[ATTACH type="full" alt="stars-flickering.gif"]2024\[/ATTACH]
-
-\[ATTACH type="full" alt="zoom-out.gif"]2025\[/ATTACH]
+\[ATTACH type="full" alt="barnards-star-partial-occlusion.jpg"]ID\[/ATTACH]
 
 \[/SPOILER]
 
+\[HEADING=2]Settings\[/HEADING]
+
+With \[URL=https://github.com/MrJeranimo/ModMenu]ModMenu\[/URL] installed, the game's Mods menu has a Real Stars page:
+
+\[LIST]
+
+\[\*]\[B]Colour adaptation\[/B]: the eye's adaptation to the colour of the light. Unticked, every light is shown in its raw colour.
+
+\[\*]\[B]Adaptation time\[/B]: how long the visible part of the adaptation takes, from 0.02 s to 3 s (1.33 s by default).
+
+\[\*]\[B]Twinkle\[/B]: stars and planets twinkling through an atmosphere.
+
+\[\*]\[B]Starburst and glare\[/B]: the starbursts and soft glow. They also follow the game's Lens Flare setting.
+
+\[/LIST]
+
+Settings are saved in \[ICODE]RealStars\\settings.toml\[/ICODE] in the game's documents folder.
+
 \[HEADING=2]Installation\[/HEADING]
 
-Requires \[URL='https://github.com/StarMapLoader/StarMap']StarMap\[/URL]. Each release is named with the KSA build it was tested on.
+Requires \[URL=https://github.com/StarMapLoader/StarMap]StarMap\[/URL]. Each release is named with the KSA build it was tested on.
 
 \[B]With Borea:\[/B] install Real Stars from the mod list.
 
@@ -102,7 +130,7 @@ Requires \[URL='https://github.com/StarMapLoader/StarMap']StarMap\[/URL]. Each r
 
 \[\*]Install StarMap and run the game once through \[ICODE]StarMap.Loader.exe\[/ICODE].
 
-\[\*]Extract the release into \[ICODE]Documents\\My Games\\Kitten Space Agency\\mods\[/ICODE], giving \[ICODE]mods\\RealStars\\RealStars.dll\[/ICODE].
+\[\*]Extract the release into \[ICODE]Documents\\My Games\\Kitten Space Agency\\mods\\\[/ICODE], giving \[ICODE]mods\\RealStars\\RealStars.dll\[/ICODE].
 
 \[\*]Launch the game once and close it. KSA adds new mods to \[ICODE]manifest.toml\[/ICODE] disabled: set this mod's entry to \[ICODE]enabled = true\[/ICODE].
 
@@ -112,19 +140,28 @@ Requires \[URL='https://github.com/StarMapLoader/StarMap']StarMap\[/URL]. Each r
 
 To uninstall, delete \[ICODE]mods\\RealStars\[/ICODE].
 
+\[HEADING=2]For star system authors\[/HEADING]
+
+The \[URL=https://github.com/Brimfyr/RealStars#for-star-system-authors]README\[/URL] explains how Real Stars reads a star's light and a body's colour, and lists the raw colour of each kind of star.
+
 \[HEADING=2]Building\[/HEADING]
 
-\[ICODE]deploy.ps1\[/ICODE] builds the mod and installs it into your mods folder. \[ICODE]package.ps1 -Version x.y.z -GameBuild vYYYY.M.D.NNNN\[/ICODE] builds a release archive in \[ICODE]dist\[/ICODE]. Set \[ICODE]StarMapDir\[/ICODE] to your StarMap folder. \[ICODE]make\_star\_binary.py\[/ICODE] rebuilds the star catalogue from AT-HYG v3.2 (\[ICODE]athyg\_32\_reduced\_m10.csv.gz\[/ICODE], in \[ICODE]assets\[/ICODE]) and the Hipparcos main catalogue (\[ICODE]hip\_main.dat\[/ICODE]).
+\[ICODE]deploy.ps1\[/ICODE] builds the mod and installs it into your mods folder. \[ICODE]package.ps1 -Version x.y.z -GameBuild vYYYY.M.D.NNNN\[/ICODE] builds a release archive in \[ICODE]dist\\\[/ICODE]. Set \[ICODE]StarMapDir\[/ICODE] to your StarMap folder. The \[ICODE]make\_\*.py\[/ICODE] scripts rebuild the star catalogue and the generated data tables from the sources they cite.
 
 \[HEADING=2]Credits\[/HEADING]
 
 \[LIST]
 
-\[\*]Star catalogue built from \[URL='https://www.astronexus.com/projects/at-hyg']AT-HYG\[/URL] v3.2 by David Nash (CC BY-SA 4.0), with positions from the Hipparcos Catalogue (ESA 1997, ESA SP-1200), retrieved from \[URL='https://vizier.cds.unistra.fr/']VizieR\[/URL] (CDS, Strasbourg), catalogue I/239. Most distances and motions in AT-HYG come from ESA's Gaia DR3.
+\[\*]Star catalogue built from \[URL=https://www.astronexus.com/projects/at-hyg]AT-HYG\[/URL] v3.2 by David Nash (CC BY-SA 4.0), with positions from the Hipparcos Catalogue (ESA 1997, ESA SP-1200), retrieved from \[URL=https://vizier.cds.unistra.fr/]VizieR\[/URL] (CDS, Strasbourg), catalogue I/239. Most distances and motions in AT-HYG come from ESA's Gaia DR3.
 
 \[\*]Starbursts after T. Ritschel, M. Ihrke, J. R. Frisvad, J. Coppens, K. Myszkowski and H.-P. Seidel, "Temporal Glare: Real-Time Dynamic Simulation of the Scattering in the Human Eye", Eurographics 2009.
 
+\[\*]What an eye sees of a faint light's colour after the naked-eye star colours of R. Neuhäuser et al., MNRAS 516, 693 (2022), and the small coloured lights of N. E. G. Hill (1947) and J. G. Holmes, Documenta Ophthalmologica 3, 240 (1949).
+
+\[\*]Star colours from the spectral library of A. J. Pickles, "A Stellar Spectral Flux Library: 1150-25000 Å", PASP 110, 863 (1998), and the Sun's from the CALSPEC solar reference spectrum (Bohlin, Dickinson and Calzetti, 2001; Neckel and Labs, 1984, through the visible).
+
+\[\*]Brightness of stars the catalogue lacks from M. J. Pecaut and E. E. Mamajek, "Intrinsic Colors, Temperatures, and Bolometric Corrections of Pre-main-sequence Stars", ApJS 208, 9 (2013), Table 5, as E. Mamajek maintains it.
+
 \[/LIST]
 
-The code is MIT; the star catalogue is CC BY-SA 4.0. \[URL='https://github.com/Brimfyr/RealStars/blob/main/CREDITS.md']CREDITS.md\[/URL] gives its sources and terms.
-
+The code is MIT; the star catalogue is CC BY-SA 4.0. \[URL=https://github.com/Brimfyr/RealStars/blob/main/CREDITS.md]CREDITS.md\[/URL] gives its sources and terms.
