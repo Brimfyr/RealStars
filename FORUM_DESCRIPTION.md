@@ -6,6 +6,10 @@ No game files are modified: the mod loads patched copies of the game's star, pla
 
 \[HEADING=2]Download\[/HEADING]
 
+\[URL='https://github.com/KSAModding/content-index/blob/main/listings/RealStars.toml']Borea\[/URL]
+
+\[URL='https://spacedock.info/mod/4608/Real%20Stars']SpaceDock\[/URL]
+
 \[URL='https://github.com/Brimfyr/RealStars']GitHub\[/URL]
 
 \[HEADING=2]Features\[/HEADING]
@@ -90,13 +94,13 @@ No game files are modified: the mod loads patched copies of the game's star, pla
 
 \[SPOILER="Show images"]
 
-\[ATTACH type="full" alt="orion-and-pleiades.jpg"]ID\[/ATTACH]
+\[ATTACH=full]2119\[/ATTACH]
 
-\[ATTACH type="full" alt="sun-from-moon-surface.jpg"]ID\[/ATTACH]
+\[ATTACH=full]2120\[/ATTACH]
 
-\[ATTACH type="full" alt="orbital-sunrise.jpg"]ID\[/ATTACH]
+\[ATTACH=full]2118\[/ATTACH]
 
-\[ATTACH type="full" alt="barnards-star-partial-occlusion.jpg"]ID\[/ATTACH]
+\[ATTACH=full]2117\[/ATTACH]
 
 \[/SPOILER]
 
@@ -165,3 +169,4 @@ The \[URL=https://github.com/Brimfyr/RealStars#for-star-system-authors]README\[/
 \[/LIST]
 
 The code is MIT; the star catalogue is CC BY-SA 4.0. \[URL=https://github.com/Brimfyr/RealStars/blob/main/CREDITS.md]CREDITS.md\[/URL] gives its sources and terms.
+
